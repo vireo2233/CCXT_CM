@@ -28,6 +28,14 @@ for spec in special_methods(exchange):
 
 元数据不是新的交易返回类型，也不是权限控制。`special_methods` 只返回扩展作者显式声明的专有方法，不枚举官方所有 implicit endpoints。
 
+## Bifu `mock`
+
+Bifu 的模拟刷量使用现货下单地址，但协议类型是 `SANDBOX_MARKET`，且只允许 Sandbox 账户。
+它不是 CCXT 标准下单能力，因此由 `create_mock_order(symbol, side, value, params=None)` 单独暴露，
+并声明为 private、mutating 的 `SpecialMethod`。标准 `create_order` 不接受 `mock` 或
+`SANDBOX_MARKET`。完整参数、返回和验收边界见
+[第 12 课](learning/12-bifu-mock.md)。
+
 ## 每个专有方法的文档至少包含
 
 - 原始 endpoint、HTTP/WS 方法、协议版本与来源。

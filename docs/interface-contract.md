@@ -12,6 +12,7 @@
 | `fetch_trades` / `fetch_ohlcv` | `symbol, since, limit, params` / 加 `timeframe` | Trade 列表 / OHLCV 数组 |
 | `create_order` | **`symbol, type, side, amount, price, params`** | Order |
 | `cancel_order` / `fetch_order` | `id, symbol, params` | Order |
+| `cancel_all_orders` | `symbol, params` | Order 列表；只有汇总 ACK 时不得伪造逐单终态 |
 | `fetch_open_orders` / `fetch_orders` / `fetch_closed_orders` | `symbol, since, limit, params` | Order 列表 |
 | `fetch_balance` | `params` | Balance |
 | `create_orders` / `cancel_orders` | `orders, params` / `ids, symbol, params` | 按官方契约的结果列表 |
