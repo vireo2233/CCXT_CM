@@ -62,11 +62,15 @@ async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
         raise NotSupported("Spot limit-price auto-adjustment must be disabled")
     if behavior.get("smsef") is not False:
         raise NotSupported("Third-currency spot fee deduction is not supported")
+    margin_mode = account.get("result", {}).get("marginMode")
+    if margin_mode not in ("ISOLATED_MARGIN", "REGULAR_MARGIN", "PORTFOLIO_MARGIN"):
+        margin_mode = None
     return {
         "uid": expected_uid,
         "environment": "sandbox",
         "market_type": "spot",
         "unified_margin_status": status,
+        "margin_mode": margin_mode,
         "spot_price_auto_adjustment": False,
         "spot_mnt_fee_deduction": False,
     }

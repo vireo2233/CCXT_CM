@@ -34,7 +34,7 @@ def client():
         private_get_v5_account_info=AsyncMock(
             return_value={
                 "retCode": 0,
-                "result": {"unifiedMarginStatus": 5},
+                "result": {"unifiedMarginStatus": 5, "marginMode": "REGULAR_MARGIN"},
             }
         ),
         private_get_v5_account_user_setting_config=AsyncMock(
@@ -51,10 +51,29 @@ async def test_verified_identity_is_redacted():
         "environment": "sandbox",
         "market_type": "spot",
         "unified_margin_status": 5,
+        "margin_mode": "REGULAR_MARGIN",
         "spot_price_auto_adjustment": False,
         "spot_mnt_fee_deduction": False,
     }
     assert "apiKey" not in result
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("ISOLATED_MARGIN", "ISOLATED_MARGIN"),
+        ("PORTFOLIO_MARGIN", "PORTFOLIO_MARGIN"),
+        (None, None),
+        ("untrusted-secret", None),
+    ],
+)
+async def test_only_official_account_modes_are_returned(mode, expected):
+    exchange = client()
+    exchange.private_get_v5_account_info.return_value["result"]["marginMode"] = mode
+    result = await verify_bybit_testnet_account(exchange, "101")
+    assert result["margin_mode"] == expected
+    assert "untrusted-secret" not in str(result)
+    exchange.private_get_v5_account_info.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
