@@ -1,10 +1,11 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import ccxt
 import pytest
 
 from ccxt_cm import create_exchange, verify_bybit_testnet_account
+from ccxt_cm.account_guards import fetch_bybit_testnet_spot_public_window
 
 
 def client():
@@ -161,3 +162,146 @@ async def test_actual_pro_client_nested_websocket_routes(production_ws):
             assert (await verify_bybit_testnet_account(exchange, "101"))["uid"] == "101"
     finally:
         await exchange.close()
+
+
+def public_client():
+    exchange = client()
+    exchange.timeout = 5000
+    exchange.market = Mock(return_value={"id": "JUPUSDT", "symbol": "JUP/USDT", "spot": True})
+    exchange.milliseconds = Mock(side_effect=[2000, 2002])
+    rows = [{"execId": "trade-" + str(at), "symbol": "JUPUSDT", "side": "Buy",
+             "price": "0.31", "size": "20", "time": str(at)} for at in (2000, 1999, 1000, 999)]
+    exchange.public_get_v5_market_recent_trade = AsyncMock(return_value={
+        "retCode": 0, "result": {"category": "spot", "list": rows}, "time": 2001,
+    })
+    return exchange
+
+
+async def test_public_suffix_keeps_native_predecessor_and_explicit_coverage_basis():
+    exchange = public_client()
+    proof = await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    assert proof["complete"] is True and proof["oldest_trade_ms"] == 999
+    assert proof["window_start_ms"] == 1000 and proof["window_end_ms"] == 2000
+    assert proof["read_start_ms"] == 2000 and proof["read_end_ms"] == 2002 and proof["source_time_ms"] == 2001
+    assert proof["coverage_basis"] == "endpoint_latest_suffix_normal_api_semantics_inference"
+    assert proof["source_time_is_completion_watermark"] is proof["zero_latency_guaranteed"] is False
+    exchange.public_get_v5_market_recent_trade.assert_awaited_once_with({"category": "spot", "symbol": "JUPUSDT", "limit": 60})
+    exchange.private_get_v5_user_query_api.assert_not_awaited()
+    proof["native_response"]["result"]["list"].clear()
+    assert len(exchange.public_get_v5_market_recent_trade.return_value["result"]["list"]) == 4
+
+
+@pytest.mark.parametrize("case", ["equal", "newer", "empty", "full_equal", "long", "source_before_cutoff"])
+async def test_public_suffix_incomplete_evidence_never_claims_window(case):
+    exchange = public_client()
+    raw = exchange.public_get_v5_market_recent_trade.return_value
+    start, end = 1000, 2000
+    if case in ("equal", "newer"):
+        raw["result"]["list"] = raw["result"]["list"][:3 if case == "equal" else 2]
+    elif case == "empty":
+        raw["result"]["list"] = []
+    elif case == "full_equal":
+        row = raw["result"]["list"][2]
+        raw["result"]["list"] = [dict(row, execId="tie-" + str(index)) for index in range(60)]
+    elif case == "long":
+        start, end = 0, 60001
+        exchange.milliseconds.side_effect = [60001, 60003]
+        raw["time"] = 60002
+    else:
+        exchange.milliseconds.side_effect = [1999, 2002]
+        raw["time"] = 1999
+        raw["result"]["list"].pop(0)
+    proof = await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=start, end_ms=end)
+    assert proof["complete"] is False and proof["native_response"] == raw
+
+
+@pytest.mark.parametrize("read_start", [1999, 2000])
+async def test_public_suffix_right_open_cutoff_allows_same_ms_invocation(read_start):
+    exchange = public_client()
+    exchange.milliseconds.side_effect = [read_start, 2002]
+    proof = await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    assert proof["complete"] is True
+
+
+@pytest.mark.parametrize("start,end", [(True, 2000), (1000, False), (1.0, 2000), (-1, 2000), (2000, 2000), (2001, 2000), (1000, 2002)])
+async def test_public_suffix_invalid_or_not_yet_arrived_window_never_reads(start, end):
+    exchange = public_client()
+    with pytest.raises(ValueError, match="bybit_public_window:"):
+        await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=start, end_ms=end)
+    exchange.public_get_v5_market_recent_trade.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    "retcode", "retcode_bool", "category", "not_list", "overfull", "duplicate", "duplicate_conflict",
+    "missing_id", "blank_id", "symbol", "side", "zero_price", "negative_size", "nan", "infinity", "float_price",
+    "missing_time", "bool_time", "float_time", "fractional_time", "negative_time", "future_trade",
+    "missing_source", "string_source", "future_source", "old_source", "backwards_read", "slow_read",
+])
+async def test_public_suffix_invalid_native_facts_fail_without_leaking_payload(change):
+    exchange = public_client()
+    raw = exchange.public_get_v5_market_recent_trade.return_value
+    raw["retMsg"] = "FAKE_SECRET_NEVER_LOG"
+    row = raw["result"]["list"][0]
+    if change in ("retcode", "retcode_bool"):
+        raw["retCode"] = 1 if change == "retcode" else False
+    elif change == "category":
+        raw["result"]["category"] = "linear"
+    elif change == "not_list":
+        raw["result"]["list"] = {}
+    elif change == "overfull":
+        raw["result"]["list"] = [dict(row, execId=str(i)) for i in range(61)]
+    elif change in ("duplicate", "duplicate_conflict"):
+        raw["result"]["list"].append(dict(row, price="0.32") if change == "duplicate_conflict" else dict(row))
+    elif change in ("missing_id", "blank_id", "symbol", "side", "zero_price", "negative_size", "nan", "infinity", "float_price"):
+        field, value = {"missing_id": ("execId", None), "blank_id": ("execId", " "),
+                        "symbol": ("symbol", "BTCUSDT"), "side": ("side", "Unknown"),
+                        "zero_price": ("price", "0"), "negative_size": ("size", "-1"),
+                        "nan": ("price", "NaN"), "infinity": ("size", "Infinity"), "float_price": ("price", .31)}[change]
+        row[field] = value
+    elif change in ("missing_time", "bool_time", "float_time", "fractional_time", "negative_time", "future_trade"):
+        row["time"] = {"missing_time": None, "bool_time": True, "float_time": 2000.0,
+                       "fractional_time": "1999.5", "negative_time": "-1", "future_trade": "2002"}[change]
+    elif change in ("missing_source", "string_source", "future_source", "old_source"):
+        raw["time"] = {"missing_source": None, "string_source": "2001", "future_source": 2003, "old_source": 1999}[change]
+    else:
+        exchange.milliseconds.side_effect = [2000, 1999 if change == "backwards_read" else 7001]
+    with pytest.raises(ValueError, match="bybit_public_window:") as error:
+        await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    assert "FAKE_SECRET" not in str(error.value)
+    exchange.public_get_v5_market_recent_trade.assert_awaited_once()
+
+
+@pytest.mark.parametrize("case", ["production", "non_spot", "bad_market", "timeout_config"])
+async def test_public_suffix_route_and_market_guards_precede_io(case):
+    exchange = public_client()
+    if case == "production":
+        exchange.isSandboxModeEnabled = False
+    elif case == "non_spot":
+        exchange.options["defaultType"] = "swap"
+    elif case == "bad_market":
+        exchange.market.return_value["spot"] = False
+    else:
+        exchange.timeout = float("nan")
+    with pytest.raises((ValueError, ccxt.NotSupported)):
+        await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    exchange.public_get_v5_market_recent_trade.assert_not_awaited()
+
+
+async def test_public_suffix_timeout_and_cancellation_do_not_retry():
+    import asyncio
+
+    exchange = public_client()
+    exchange.timeout = 1
+
+    async def blocked(params):
+        await asyncio.Event().wait()
+
+    exchange.public_get_v5_market_recent_trade.side_effect = blocked
+    with pytest.raises(TimeoutError):
+        await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    exchange.public_get_v5_market_recent_trade.assert_awaited_once()
+    exchange = public_client()
+    exchange.public_get_v5_market_recent_trade.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
+    exchange.public_get_v5_market_recent_trade.assert_awaited_once()

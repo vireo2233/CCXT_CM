@@ -1,5 +1,9 @@
-"""Account identity checks using official CCXT implicit endpoints, with no writes."""
+"""Testnet identity and read-evidence guards using official implicit endpoints."""
 
+import asyncio
+import math
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
 from ccxt import AuthenticationError, NotSupported, PermissionDenied
@@ -31,6 +35,80 @@ def _require_bybit_testnet_spot(exchange) -> None:
 
     for name, endpoint in endpoints.items():
         check_endpoint(endpoint, websocket=name == "ws")
+
+
+async def fetch_bybit_testnet_spot_public_window(exchange, symbol, *, start_ms, end_ms):
+    """Keep a raw latest-60 suffix before filtering a finite [start, end) window.
+
+    Coverage uses the endpoint's normal latest-suffix snapshot semantics. It is
+    not a server completion watermark or a guarantee of zero publication delay.
+    A strict predecessor is required even when fewer than 60 rows are returned.
+    """
+    _require_bybit_testnet_spot(exchange)
+
+    def require(condition, code):
+        if not condition:
+            raise ValueError("bybit_public_window:" + code)
+
+    require(type(start_ms) is int and type(end_ms) is int and 0 <= start_ms < end_ms,
+            "invalid_window")
+    market = exchange.market(symbol)
+    require(isinstance(market, dict) and market.get("spot") is True
+            and isinstance(market.get("id"), str) and bool(market["id"])
+            and isinstance(market.get("symbol"), str) and bool(market["symbol"]), "spot_market")
+    timeout_ms = exchange.timeout
+    require(type(timeout_ms) in (int, float) and math.isfinite(timeout_ms) and timeout_ms > 0,
+            "invalid_timeout")
+    read_start = exchange.milliseconds()
+    require(type(read_start) is int and read_start >= 0 and end_ms - 1 <= read_start,
+            "cutoff_not_reached")
+    params = {"category": "spot", "symbol": market["id"], "limit": 60}
+    async with asyncio.timeout(timeout_ms / 1000):
+        raw = await exchange.public_get_v5_market_recent_trade(dict(params))
+    read_end = exchange.milliseconds()
+    require(type(read_end) is int and read_start <= read_end
+            and read_end - read_start <= timeout_ms, "read_clock_order")
+    result = raw.get("result") if isinstance(raw, dict) else None
+    require(isinstance(raw, dict) and type(raw.get("retCode")) is int and raw["retCode"] == 0
+            and isinstance(result, dict) and result.get("category") == "spot"
+            and isinstance(result.get("list"), list) and len(result["list"]) <= 60,
+            "response_shape")
+    source = raw.get("time")
+    require(type(source) is int and read_start <= source <= read_end, "source_clock_order")
+    seen, times = set(), []
+    for row in result["list"]:
+        require(isinstance(row, dict) and isinstance(row.get("execId"), str)
+                and bool(row["execId"]) and row["execId"].strip() == row["execId"]
+                and row["execId"] not in seen and row.get("symbol") == market["id"]
+                and row.get("side") in ("Buy", "Sell"), "trade_identity")
+        seen.add(row["execId"])
+        for field in ("price", "size"):
+            value = row.get(field)
+            require(isinstance(value, str) and bool(value) and value.strip() == value,
+                    "trade_number")
+            try:
+                number = Decimal(value)
+            except InvalidOperation:
+                raise ValueError("bybit_public_window:trade_number") from None
+            require(number.is_finite() and number > 0, "trade_number")
+        value = row.get("time")
+        require(type(value) is int or (isinstance(value, str) and value.isascii()
+                and value.isdecimal()), "trade_time")
+        at = int(value)
+        require(0 < at <= source, "trade_time")
+        times.append(at)
+    oldest = min(times, default=None)
+    complete = bool(end_ms - start_ms <= 60000 and end_ms <= source
+                    and oldest is not None and oldest < start_ms)
+    return {
+        "symbol": market["symbol"], "query": params,
+        "window_start_ms": start_ms, "window_end_ms": end_ms,
+        "read_start_ms": read_start, "read_end_ms": read_end, "source_time_ms": source,
+        "oldest_trade_ms": oldest, "complete": complete,
+        "coverage_basis": "endpoint_latest_suffix_normal_api_semantics_inference",
+        "source_time_is_completion_watermark": False, "zero_latency_guaranteed": False,
+        "native_response": deepcopy(raw),
+    }
 
 
 async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
