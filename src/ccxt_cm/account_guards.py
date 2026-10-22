@@ -5,18 +5,12 @@ from urllib.parse import urlsplit
 from ccxt import AuthenticationError, NotSupported, PermissionDenied
 
 
-async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
-    """Verify the actual key UID, unified account and spot-trading permission.
-
-    Sandbox routing must already be enabled before any network request. Never
-    return the raw query-api payload: it includes the complete API key.
-    """
+def _require_bybit_testnet_spot(exchange) -> None:
+    """Check existing REST/Pro routing locally, before any network request."""
     if exchange.id != "bybit" or exchange.isSandboxModeEnabled is not True:
         raise NotSupported("Bybit Testnet sandbox routing is required")
     if exchange.options.get("defaultType") != "spot":
         raise NotSupported("The account guard is restricted to spot")
-    if not isinstance(expected_uid, str) or not expected_uid.isdecimal():
-        raise ValueError("A numeric expected UID is required")
     endpoints = exchange.urls.get("api", {})
     if not isinstance(endpoints, dict) or not {"public", "private"} <= endpoints.keys():
         raise NotSupported("Official Testnet REST endpoints are required")
@@ -37,6 +31,17 @@ async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
 
     for name, endpoint in endpoints.items():
         check_endpoint(endpoint, websocket=name == "ws")
+
+
+async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
+    """Verify the actual key UID, unified account and spot-trading permission.
+
+    Sandbox routing must already be enabled before any network request. Never
+    return the raw query-api payload: it includes the complete API key.
+    """
+    _require_bybit_testnet_spot(exchange)
+    if not isinstance(expected_uid, str) or not expected_uid.isdecimal():
+        raise ValueError("A numeric expected UID is required")
     raw = await exchange.private_get_v5_user_query_api()
     result = raw.get("result", {})
     if raw.get("retCode") != 0 or str(result.get("userID")) != expected_uid:

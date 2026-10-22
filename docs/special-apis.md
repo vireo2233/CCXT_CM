@@ -28,6 +28,18 @@ for spec in special_methods(exchange):
 
 元数据不是新的交易返回类型，也不是权限控制。`special_methods` 只返回扩展作者显式声明的专有方法，不枚举官方所有 implicit endpoints。
 
+## Bybit Testnet 的原客户端订单身份查询
+
+`fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_order_id)` 是只读的窄适配，复用已创建的官方 CCXT 客户端，不另建连接或修改 `has`。调用前应加载市场、绑定 sandbox，并通过 `verify_bybit_testnet_account` 核对实际账户。
+
+该方法仅接受 Bybit 官方 Testnet 路由、spot 市场及原始 client ID。使用已声明的 `GET /v5/order/realtime`，仅在空结果时查询 `GET /v5/order/history`，两次均发送原 `symbol + orderLinkId`。先检查原始响应恰好一条、客户端身份和交易对一致，再调用官方 `parse_order` 返回标准订单；多条、续页、外来身份及格式不完整均抛出 `ClientOrderLookupUnconfirmed`。
+
+官方 `fetch_order(None, symbol, {"orderLinkId": id, "acknowledged": True})` 虽能透传原身份，但当前实现直接选择第一条 realtime 记录，丢失多条检测证据，因此这里使用原生 implicit API 做必要的边界补齐，不扩展通用下单接口。
+
+两处都为空仍表示未知，不证明订单从未创建，也不允许据此重发或释放未核清的预算。helper 本身不增设重试；传输行为遵循既有客户端设置。调用方保留原意图，后续继续按同一身份核对。无创建、撤单或改价操作。
+
+来源：[实时订单查询](https://bybit-exchange.github.io/docs/v5/order/open-order)、[订单历史](https://bybit-exchange.github.io/docs/v5/order/order-list)。历史数据可能延迟；服务器重启后近期已关闭订单可能只在历史接口可查。离线测试使用真实 CCXT 签名及请求构造，仅 mock HTTP 传输，不构成 Testnet 实际查询验收。
+
 ## Bifu `mock`
 
 Bifu 的模拟刷量使用现货下单地址，但协议类型是 `SANDBOX_MARKET`，且只允许 Sandbox 账户。
