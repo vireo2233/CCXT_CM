@@ -5,7 +5,10 @@ import ccxt
 import pytest
 
 from ccxt_cm import create_exchange, verify_bybit_testnet_account
-from ccxt_cm.account_guards import fetch_bybit_testnet_spot_public_window
+from ccxt_cm.account_guards import (
+    fetch_bybit_testnet_spot_public_window,
+    fetch_bybit_testnet_spot_smp_settings,
+)
 
 
 def client():
@@ -305,3 +308,159 @@ async def test_public_suffix_timeout_and_cancellation_do_not_retry():
     with pytest.raises(asyncio.CancelledError):
         await fetch_bybit_testnet_spot_public_window(exchange, "JUP/USDT", start_ms=1000, end_ms=2000)
     exchange.public_get_v5_market_recent_trade.assert_awaited_once()
+
+
+def smp_client():
+    exchange = client()
+    exchange.timeout = 5000
+    exchange.milliseconds = Mock(side_effect=[2000, 2003])
+    exchange.private_get_v5_account_user_setting_config.return_value = {
+        "retCode": 0, "result": {"smpType": 0, "extra": "FAKE_SECRET"}, "time": 2001,
+    }
+    exchange.private_get_v5_account_smp_group = AsyncMock(return_value={
+        "retCode": 0, "result": {"smpGroup": 0}, "time": 2002,
+    })
+    return exchange
+
+
+@pytest.mark.parametrize("kind", [0, 1, 2, 3])
+@pytest.mark.parametrize("group", [0, 7])
+async def test_smp_reader_returns_facts_not_matching_permission(kind, group):
+    exchange = smp_client()
+    exchange.private_get_v5_account_user_setting_config.return_value["result"]["smpType"] = kind
+    exchange.private_get_v5_account_smp_group.return_value["result"]["smpGroup"] = group
+    proof = await fetch_bybit_testnet_spot_smp_settings(exchange)
+    assert proof == {"smp_type": kind, "smp_group": group, "source_ms": 2001,
+                     "settings_source_ms": 2001, "group_source_ms": 2002,
+                     "read_start_ms": 2000, "read_end_ms": 2003}
+    assert "FAKE_SECRET" not in repr(proof) and "same_account_matching" not in proof
+    exchange.private_get_v5_account_user_setting_config.assert_awaited_once_with()
+    exchange.private_get_v5_account_smp_group.assert_awaited_once_with()
+    exchange.private_get_v5_user_query_api.assert_not_awaited()
+    exchange.private_get_v5_account_info.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    {"id": "other"}, {"isSandboxModeEnabled": False}, {"isSandboxModeEnabled": None},
+    {"options": {"defaultType": "swap"}},
+    {"urls": {"api": {"public": "https://api.bybit.com", "private": "https://api.bybit.com"}}},
+    {"urls": {"api": {"public": "https://api-demo.bybit.com", "private": "https://api-demo.bybit.com"}}},
+    {"urls": {"api": {"public": "https://api-testnet.bybit.com", "private": "https://api.bybit.com"}}},
+])
+async def test_smp_wrong_environment_never_reads_accounts(change):
+    exchange = smp_client()
+    for key, value in change.items():
+        setattr(exchange, key, value)
+    with pytest.raises(ccxt.NotSupported):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+    exchange.private_get_v5_account_user_setting_config.assert_not_awaited()
+    exchange.private_get_v5_account_smp_group.assert_not_awaited()
+
+
+@pytest.mark.parametrize("endpoint", ["settings", "group"])
+@pytest.mark.parametrize("field,value", [
+    ("retCode", False), ("retCode", "0"), ("retCode", 1), ("retCode", None),
+    ("result", None), ("result", []), ("time", None), ("time", "2001"),
+    ("time", True), ("time", 2001.0),
+])
+async def test_smp_native_shape_is_strict_and_diagnostics_do_not_echo_raw(endpoint, field, value):
+    exchange = smp_client()
+    method = exchange.private_get_v5_account_user_setting_config if endpoint == "settings" else exchange.private_get_v5_account_smp_group
+    method.return_value[field] = value
+    method.return_value["retMsg"] = "FAKE_SECRET"
+    with pytest.raises(ValueError, match="bybit_smp:") as caught:
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+    assert "FAKE_SECRET" not in str(caught.value)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("smpType", None), ("smpType", True), ("smpType", "0"), ("smpType", 0.0),
+    ("smpType", -1), ("smpType", 4), ("smpGroup", None), ("smpGroup", False),
+    ("smpGroup", "0"), ("smpGroup", 0.0), ("smpGroup", -1),
+])
+async def test_smp_unknown_fields_never_default_to_disabled(field, value):
+    exchange = smp_client()
+    method = exchange.private_get_v5_account_user_setting_config if field == "smpType" else exchange.private_get_v5_account_smp_group
+    method.return_value["result"][field] = value
+    with pytest.raises(ValueError, match="bybit_smp:"):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+
+
+@pytest.mark.parametrize("start,end,setting_source,group_source", [
+    (-1, 2003, 2001, 2002), (True, 2003, 2001, 2002), (2000.0, 2003, 2001, 2002),
+    (2000, 1999, 2001, 2002), (2000, 7001, 2001, 2002), (2000, 2003, 1999, 2002),
+    (2000, 2003, 2001, 2004), (2000, 2003, 2002, 2001), (0, 3, 0, 1),
+])
+async def test_smp_source_and_local_read_order_have_no_implicit_clock_tolerance(start, end, setting_source, group_source):
+    exchange = smp_client()
+    exchange.milliseconds.side_effect = [start, end]
+    exchange.private_get_v5_account_user_setting_config.return_value["time"] = setting_source
+    exchange.private_get_v5_account_smp_group.return_value["time"] = group_source
+    with pytest.raises(ValueError, match="bybit_smp:"):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, "5000", float("nan"), float("inf")])
+async def test_smp_invalid_existing_timeout_precedes_io(timeout):
+    exchange = smp_client()
+    exchange.timeout = timeout
+    with pytest.raises(ValueError, match="bybit_smp:invalid_timeout"):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+    exchange.private_get_v5_account_user_setting_config.assert_not_awaited()
+
+
+async def test_smp_read_failure_timeout_and_cancellation_never_retry_or_echo_secrets():
+    import asyncio
+
+    for failure in (ccxt.RequestTimeout("FAKE_SECRET"), RuntimeError("FAKE_SECRET"), asyncio.CancelledError()):
+        exchange = smp_client()
+        exchange.private_get_v5_account_smp_group.side_effect = failure
+        with pytest.raises((ValueError, asyncio.CancelledError)) as caught:
+            await fetch_bybit_testnet_spot_smp_settings(exchange)
+        assert "FAKE_SECRET" not in str(caught.value)
+        exchange.private_get_v5_account_user_setting_config.assert_awaited_once()
+        exchange.private_get_v5_account_smp_group.assert_awaited_once()
+    exchange = smp_client()
+    exchange.timeout = 1
+    async def blocked():
+        await asyncio.Event().wait()
+    exchange.private_get_v5_account_smp_group.side_effect = blocked
+    with pytest.raises(ValueError, match="bybit_smp:read_timeout"):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+    exchange.private_get_v5_account_smp_group.assert_awaited_once()
+
+
+async def test_smp_rechecks_same_client_route_before_second_read():
+    exchange = smp_client()
+    raw = exchange.private_get_v5_account_user_setting_config.return_value
+    async def changed():
+        exchange.urls["api"]["private"] = "https://api.bybit.com"
+        return raw
+    exchange.private_get_v5_account_user_setting_config.side_effect = changed
+    with pytest.raises(ValueError, match="bybit_smp:native_read_failed"):
+        await fetch_bybit_testnet_spot_smp_settings(exchange)
+    exchange.private_get_v5_account_smp_group.assert_not_awaited()
+
+
+async def test_smp_actual_ccxt_implicit_endpoints_are_two_private_gets_without_writes():
+    from urllib.parse import urlsplit
+
+    exchange = create_exchange("bybit", {"apiKey": "FAKE_KEY", "secret": "FAKE_SECRET",
+        "enableRateLimit": False, "options": {"defaultType": "spot"}}, mode="async")
+    exchange.set_sandbox_mode(True)
+    exchange.milliseconds = Mock(return_value=1700000000000)
+    exchange.fetch = AsyncMock(side_effect=[
+        {"retCode": 0, "result": {"smpType": 0}, "time": 1700000000000},
+        {"retCode": 0, "result": {"smpGroup": 0}, "time": 1700000000000},
+    ])
+    try:
+        result = await fetch_bybit_testnet_spot_smp_settings(exchange)
+        assert result["smp_type"] == result["smp_group"] == 0
+        assert "FAKE" not in repr(result)
+        requests = [call.args for call in exchange.fetch.await_args_list]
+        assert [(urlsplit(row[0]).netloc, urlsplit(row[0]).path, row[1], row[3]) for row in requests] == [
+            ("api-testnet.bybit.com", "/v5/account/user-setting-config", "GET", None),
+            ("api-testnet.bybit.com", "/v5/account/smp-group", "GET", None),
+        ]
+    finally:
+        await exchange.close()

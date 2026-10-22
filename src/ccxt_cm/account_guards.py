@@ -111,6 +111,52 @@ async def fetch_bybit_testnet_spot_public_window(exchange, symbol, *, start_ms, 
     }
 
 
+async def fetch_bybit_testnet_spot_smp_settings(exchange) -> dict:
+    """Read current SMP facts; neither an atomic snapshot nor a capability grant.
+
+    ``source_ms`` is the earlier source time of the two sequential reads. Keep
+    both original source times so callers cannot mistake it for a single read.
+    """
+    _require_bybit_testnet_spot(exchange)
+
+    def require(condition, code):
+        if not condition:
+            raise ValueError("bybit_smp:" + code)
+
+    timeout_ms = exchange.timeout
+    require(type(timeout_ms) in (int, float) and math.isfinite(timeout_ms) and timeout_ms > 0,
+            "invalid_timeout")
+    read_start = exchange.milliseconds()
+    require(type(read_start) is int and read_start >= 0, "read_clock_order")
+    try:
+        async with asyncio.timeout(timeout_ms / 1000):
+            settings = await exchange.private_get_v5_account_user_setting_config()
+            _require_bybit_testnet_spot(exchange)
+            group = await exchange.private_get_v5_account_smp_group()
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        raise ValueError("bybit_smp:read_timeout") from None
+    except Exception:
+        raise ValueError("bybit_smp:native_read_failed") from None
+    read_end = exchange.milliseconds()
+    require(type(read_end) is int and read_start <= read_end
+            and read_end - read_start <= timeout_ms, "read_clock_order")
+    for raw in (settings, group):
+        require(isinstance(raw, dict) and type(raw.get("retCode")) is int and raw["retCode"] == 0
+                and isinstance(raw.get("result"), dict) and type(raw.get("time")) is int,
+                "response_shape")
+    setting_source, group_source = settings["time"], group["time"]
+    require(0 < setting_source and read_start <= setting_source <= group_source <= read_end,
+            "source_clock_order")
+    smp_type, smp_group = settings["result"].get("smpType"), group["result"].get("smpGroup")
+    require(type(smp_type) is int and smp_type in (0, 1, 2, 3), "smp_type_unknown")
+    require(type(smp_group) is int and smp_group >= 0, "smp_group_unknown")
+    return {"smp_type": smp_type, "smp_group": smp_group,
+            "source_ms": min(setting_source, group_source), "settings_source_ms": setting_source,
+            "group_source_ms": group_source, "read_start_ms": read_start, "read_end_ms": read_end}
+
+
 async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
     """Verify the actual key UID, unified account and spot-trading permission.
 
