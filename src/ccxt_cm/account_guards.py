@@ -20,12 +20,23 @@ async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
     endpoints = exchange.urls.get("api", {})
     if not isinstance(endpoints, dict) or not {"public", "private"} <= endpoints.keys():
         raise NotSupported("Official Testnet REST endpoints are required")
-    for endpoint in endpoints.values():
+
+    def check_endpoint(endpoint, websocket=False):
+        if isinstance(endpoint, dict):
+            for value in endpoint.values():
+                check_endpoint(value, websocket)
+            return
         if not isinstance(endpoint, str):
-            raise NotSupported("Unexpected REST endpoint declaration")
+            raise NotSupported("Unexpected endpoint declaration")
         parsed = urlsplit(endpoint.replace("{hostname}", exchange.hostname))
-        if parsed.scheme != "https" or parsed.netloc != "api-testnet.bybit.com":
-            raise NotSupported("Only official Bybit Testnet REST endpoints are accepted")
+        expected = (
+            ("wss", "stream-testnet.bybit.com") if websocket else ("https", "api-testnet.bybit.com")
+        )
+        if (parsed.scheme, parsed.netloc) != expected:
+            raise NotSupported("Only official Bybit Testnet endpoints are accepted")
+
+    for name, endpoint in endpoints.items():
+        check_endpoint(endpoint, websocket=name == "ws")
     raw = await exchange.private_get_v5_user_query_api()
     result = raw.get("result", {})
     if raw.get("retCode") != 0 or str(result.get("userID")) != expected_uid:

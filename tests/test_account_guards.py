@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import ccxt
 import pytest
 
-from ccxt_cm import verify_bybit_testnet_account
+from ccxt_cm import create_exchange, verify_bybit_testnet_account
 
 
 def client():
@@ -116,3 +116,29 @@ async def test_unsafe_or_unknown_trade_behavior_fails_closed(field, value):
     exchange.private_get_v5_account_user_setting_config.return_value["result"][field] = value
     with pytest.raises(ccxt.NotSupported):
         await verify_bybit_testnet_account(exchange, "101")
+
+
+@pytest.mark.parametrize("production_ws", [False, True])
+async def test_actual_pro_client_nested_websocket_routes(production_ws):
+    exchange = create_exchange("bybit", {"options": {"defaultType": "spot"}}, mode="pro")
+    exchange.set_sandbox_mode(True)
+    fake = client()
+    for name in (
+        "private_get_v5_user_query_api",
+        "private_get_v5_account_info",
+        "private_get_v5_account_user_setting_config",
+    ):
+        setattr(exchange, name, getattr(fake, name))
+    if production_ws:
+        exchange.urls["api"]["ws"]["private"]["spot"]["unified"] = (
+            "wss://stream.bybit.com/v5/private"
+        )
+    try:
+        if production_ws:
+            with pytest.raises(ccxt.NotSupported):
+                await verify_bybit_testnet_account(exchange, "101")
+            exchange.private_get_v5_user_query_api.assert_not_called()
+        else:
+            assert (await verify_bybit_testnet_account(exchange, "101"))["uid"] == "101"
+    finally:
+        await exchange.close()
