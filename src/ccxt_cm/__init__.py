@@ -2,6 +2,7 @@
 
 import ccxt
 
+from .account_guards import verify_bybit_testnet_account
 from .base import AsyncExchange, Exchange
 from .capabilities import SpecialMethod, capability, require_capabilities, special_methods
 from .exchanges.bifu import BIFU_EXTENSION
@@ -35,4 +36,5 @@ __all__ = [
     "register",
     "require_capabilities",
     "special_methods",
+    "verify_bybit_testnet_account",
 ]
