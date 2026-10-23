@@ -259,6 +259,22 @@ async def fetch_bybit_testnet_spot_smp_settings(exchange) -> dict:
             "group_source_ms": group_source, "read_start_ms": read_start, "read_end_ms": read_end}
 
 
+async def fetch_bybit_testnet_spot_account_mode(exchange) -> dict:
+    """Read current account mode on the already-bound official Testnet client."""
+    _require_bybit_testnet_spot(exchange)
+    account = await exchange.private_get_v5_account_info()
+    _require_bybit_testnet_spot(exchange)
+    result = account.get("result") if isinstance(account, dict) else None
+    if (not isinstance(result, dict) or type(account.get("retCode")) is not int
+            or account["retCode"] != 0 or type(result.get("unifiedMarginStatus")) is not int
+            or result["unifiedMarginStatus"] not in (3, 4, 5, 6)):
+        raise NotSupported("Unified account status could not be verified")
+    margin_mode = result.get("marginMode")
+    if margin_mode not in ("ISOLATED_MARGIN", "REGULAR_MARGIN", "PORTFOLIO_MARGIN"):
+        margin_mode = None
+    return {"unified_margin_status": result["unifiedMarginStatus"], "margin_mode": margin_mode}
+
+
 async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
     """Verify the actual key UID, unified account and spot-trading permission.
 
@@ -278,25 +294,18 @@ async def verify_bybit_testnet_account(exchange, expected_uid: str) -> dict:
         "Spot", []
     ):
         raise PermissionDenied("The verified API key needs spot-trading permission")
-    account = await exchange.private_get_v5_account_info()
-    status = account.get("result", {}).get("unifiedMarginStatus")
-    if account.get("retCode") != 0 or status not in (3, 4, 5, 6):
-        raise NotSupported("Unified account status could not be verified")
+    account_mode = await fetch_bybit_testnet_spot_account_mode(exchange)
     settings = await exchange.private_get_v5_account_user_setting_config()
     behavior = settings.get("result", {})
     if settings.get("retCode") != 0 or behavior.get("lpaSpot") is not False:
         raise NotSupported("Spot limit-price auto-adjustment must be disabled")
     if behavior.get("smsef") is not False:
         raise NotSupported("Third-currency spot fee deduction is not supported")
-    margin_mode = account.get("result", {}).get("marginMode")
-    if margin_mode not in ("ISOLATED_MARGIN", "REGULAR_MARGIN", "PORTFOLIO_MARGIN"):
-        margin_mode = None
     return {
         "uid": expected_uid,
         "environment": "sandbox",
         "market_type": "spot",
-        "unified_margin_status": status,
-        "margin_mode": margin_mode,
+        **account_mode,
         "spot_price_auto_adjustment": False,
         "spot_mnt_fee_deduction": False,
     }

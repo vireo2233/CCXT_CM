@@ -336,6 +336,26 @@ async def test_non_unified_account_fails():
         await verify_bybit_testnet_account(exchange, "101")
 
 
+@pytest.mark.parametrize("fault", ["ret_bool", "ret_float", "status_bool", "status_float", "result_shape", "response_shape", "route_changed"])
+async def test_account_mode_native_schema_and_route_fail_closed(fault):
+    exchange = client()
+    raw = exchange.private_get_v5_account_info.return_value
+    if fault == "ret_bool": raw["retCode"] = False
+    elif fault == "ret_float": raw["retCode"] = 0.0
+    elif fault == "status_bool": raw["result"]["unifiedMarginStatus"] = True
+    elif fault == "status_float": raw["result"]["unifiedMarginStatus"] = 5.0
+    elif fault == "result_shape": raw["result"] = []
+    elif fault == "response_shape": exchange.private_get_v5_account_info.return_value = None
+    else:
+        async def changed():
+            exchange.urls["api"]["private"] = "https://api.bybit.com"
+            return raw
+        exchange.private_get_v5_account_info.side_effect = changed
+    with pytest.raises(ccxt.NotSupported):
+        await verify_bybit_testnet_account(exchange, "101")
+    exchange.private_get_v5_account_user_setting_config.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "field,value", [("lpaSpot", True), ("lpaSpot", None), ("smsef", True), ("smsef", None)]
 )
