@@ -1,4 +1,4 @@
-"""Testnet identity and read-evidence guards using official implicit endpoints."""
+"""Identity and public read-evidence guards using official implicit endpoints."""
 
 import asyncio
 import math
@@ -108,6 +108,108 @@ async def fetch_bybit_testnet_spot_public_window(exchange, symbol, *, start_ms, 
         "coverage_basis": "endpoint_latest_suffix_normal_api_semantics_inference",
         "source_time_is_completion_watermark": False, "zero_latency_guaranteed": False,
         "native_response": deepcopy(raw),
+    }
+
+
+async def fetch_binance_spot_public_window(exchange, symbol, *, start_ms, end_ms):
+    """Bounded aggregate pagination under normal API semantics, not a publication watermark.
+
+    Binance documents inclusive time/ID bounds and chronological responses.
+    Database publication can lag; server time only establishes that the cutoff
+    has arrived. A full page requires continuation, including same-ms trades.
+    """
+    def require(condition, code):
+        if not condition:
+            raise ValueError("binance_public_window:" + code)
+
+    def route():
+        require(exchange.id == "binance" and exchange.isSandboxModeEnabled is False
+                and exchange.options.get("defaultType") == "spot"
+                and not exchange.options.get("enableDemoTrading")
+                and not any(getattr(exchange, key, None)
+                            for key in ("apiKey", "secret", "password"))
+                and exchange.urls.get("api", {}).get("public")
+                == "https://data-api.binance.vision/api/v3",
+                "public_route")
+
+    route()
+    require(type(start_ms) is int and type(end_ms) is int and 0 <= start_ms < end_ms
+            and end_ms - start_ms <= 60000, "invalid_window")
+    market = exchange.market(symbol)
+    require(isinstance(market, dict) and market.get("spot") is True
+            and isinstance(market.get("id"), str) and bool(market["id"])
+            and market.get("symbol") == symbol, "spot_market")
+    timeout = exchange.timeout
+    require(type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0,
+            "invalid_timeout")
+    read_start = exchange.milliseconds()
+    require(type(read_start) is int and end_ms - 1 <= read_start, "cutoff_not_reached")
+    pages, rows, seen, anchor, terminal = [], [], set(), None, None
+    async with asyncio.timeout(timeout / 1000):
+        before = await exchange.public_get_time()
+        require(isinstance(before, dict) and type(before.get("serverTime")) is int
+                and before["serverTime"] >= end_ms, "server_cutoff_not_reached")
+        for _ in range(60):  # Finite read budget, never an unbounded recovery/retry loop.
+            route()
+            params = {"symbol": market["id"], "limit": 1000}
+            if anchor is None:
+                params.update(startTime=start_ms, endTime=end_ms - 1)
+            else:
+                params["fromId"] = anchor["a"]
+            raw = await exchange.public_get_agg_trades(dict(params))
+            require(isinstance(raw, list) and len(raw) <= 1000, "response_shape")
+            pages.append({"query": params, "response": deepcopy(raw)})
+            if anchor is not None:
+                require(bool(raw) and raw[0] == anchor, "continuation_anchor")
+            new = raw if anchor is None else raw[1:]
+            for row in new:
+                require(isinstance(row, dict)
+                        and all(type(row.get(key)) is int and row[key] >= 0
+                                for key in ("a", "f", "l"))
+                        and row["f"] <= row["l"] and type(row.get("T")) is int and row["T"] > 0
+                        and type(row.get("m")) is bool and row["a"] not in seen, "trade_identity")
+                require(not rows or (row["a"] > rows[-1]["a"] and row["T"] >= rows[-1]["T"]),
+                        "trade_order")
+                require(row["T"] >= start_ms and (anchor is not None or row["T"] < end_ms),
+                        "trade_window")
+                for key in ("p", "q"):
+                    value = row.get(key)
+                    require(isinstance(value, str) and bool(value) and value.strip() == value,
+                            "trade_number")
+                    try:
+                        number = Decimal(value)
+                    except InvalidOperation:
+                        raise ValueError("binance_public_window:trade_number") from None
+                    require(number.is_finite() and number > 0, "trade_number")
+                seen.add(row["a"])
+                rows.append(deepcopy(row))
+            if new and new[-1]["T"] >= end_ms:
+                terminal = "successor_at_or_after_cutoff"
+            elif len(raw) < 1000:
+                terminal = ("bounded_query_exhausted" if anchor is None
+                            else "id_continuation_exhausted")
+            if terminal:
+                break
+            require(bool(new), "pagination_no_progress")
+            anchor = deepcopy(new[-1])
+        require(terminal is not None, "pagination_budget_exhausted")
+        route()
+        after = await exchange.public_get_time()
+    read_end = exchange.milliseconds()
+    require(type(read_end) is int and read_start <= read_end <= read_start + timeout
+            and isinstance(after, dict) and type(after.get("serverTime")) is int
+            and read_start <= before["serverTime"] <= after["serverTime"] <= read_end,
+            "read_clock_order")
+    require(all(row["T"] <= after["serverTime"] for row in rows), "future_trade")
+    return {
+        "exchange": "binance", "environment": "mainnet", "market_type": "spot", "symbol": symbol,
+        "window_start_ms": start_ms, "window_end_ms": end_ms,
+        "read_start_ms": read_start, "read_end_ms": read_end,
+        "server_time_before_ms": before["serverTime"], "server_time_after_ms": after["serverTime"],
+        "complete": terminal is not None, "termination": terminal,
+        "coverage_basis": "bounded_aggregate_pagination_normal_api_semantics_inference",
+        "source_time_is_completion_watermark": False, "zero_latency_guaranteed": False,
+        "native_responses": pages, "trades": [row for row in rows if row["T"] < end_ms],
     }
 
 

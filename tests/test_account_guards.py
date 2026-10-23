@@ -1,14 +1,178 @@
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import ccxt
 import pytest
 
-from ccxt_cm import create_exchange, verify_bybit_testnet_account
+from ccxt_cm import account_guards, create_exchange, verify_bybit_testnet_account
 from ccxt_cm.account_guards import (
     fetch_bybit_testnet_spot_public_window,
     fetch_bybit_testnet_spot_smp_settings,
 )
+
+
+def binance_public_client():
+    return SimpleNamespace(
+        id="binance", isSandboxModeEnabled=False, apiKey="", secret="", password="",
+        options={"defaultType": "spot"},
+        urls={"api": {"public": "https://data-api.binance.vision/api/v3"}},
+        timeout=5000, milliseconds=Mock(side_effect=lambda: 2000),
+        market=Mock(return_value={"id": "JUPUSDT", "symbol": "JUP/USDT", "spot": True}),
+        public_get_time=AsyncMock(return_value={"serverTime": 2000}),
+        public_get_agg_trades=AsyncMock(return_value=[bn_row(1, 1000), bn_row(2, 1999)]),
+    )
+
+
+def bn_row(identity, at=1000):
+    return {"a": identity, "p": "0.31", "q": "20", "f": identity * 2,
+            "l": identity * 2 + 1, "T": at, "m": True, "M": True}
+
+
+async def bn_window(exchange, start=1000, end=2000):
+    return await account_guards.fetch_binance_spot_public_window(
+        exchange, "JUP/USDT", start_ms=start, end_ms=end,
+    )
+
+
+@pytest.mark.parametrize("count", [0, 2, 1000, 2001])
+async def test_binance_public_window_fixed_bounds_and_same_ms_id_pagination(count):
+    exchange = binance_public_client()
+    rows = [bn_row(index) for index in range(count)]
+
+    async def read(params):
+        assert params["symbol"] == "JUPUSDT" and params["limit"] == 1000
+        if "fromId" not in params:
+            assert params["startTime"] == 1000 and params["endTime"] == 1999
+            return deepcopy(rows[:1000])
+        assert "startTime" not in params and "endTime" not in params
+        return deepcopy(rows[params["fromId"]:params["fromId"] + 1000])
+
+    exchange.public_get_agg_trades.side_effect = read
+    proof = await bn_window(exchange)
+    assert proof["complete"] is True
+    assert proof["exchange"] == "binance" and proof["environment"] == "mainnet"
+    assert proof["window_start_ms"] == 1000 and proof["window_end_ms"] == 2000
+    assert proof["source_time_is_completion_watermark"] is proof["zero_latency_guaranteed"] is False
+    assert proof["coverage_basis"] == "bounded_aggregate_pagination_normal_api_semantics_inference"
+    assert proof["trades"] == rows and proof["native_responses"]
+    expected_calls = 1 if count < 1000 else 2 if count == 1000 else 3
+    assert exchange.public_get_agg_trades.await_count == expected_calls
+
+
+@pytest.mark.parametrize("fault", [
+    "id_bool", "float_price", "nan", "zero", "time", "maker", "raw_range", "duplicate",
+    "order", "outside", "shape", "clock", "route", "credentials", "sandbox", "market",
+])
+async def test_binance_public_window_invalid_evidence_is_not_complete(fault):
+    exchange = binance_public_client()
+    rows = exchange.public_get_agg_trades.return_value
+    if fault in ("id_bool", "float_price", "nan", "zero", "time", "maker", "raw_range"):
+        field, value = {"id_bool": ("a", True), "float_price": ("p", .31), "nan": ("q", "NaN"),
+                        "zero": ("q", "0"), "time": ("T", True), "maker": ("m", 1),
+                        "raw_range": ("l", -1)}[fault]
+        rows[0][field] = value
+    elif fault == "duplicate":
+        rows.append(deepcopy(rows[0]))
+    elif fault == "order":
+        rows.reverse()
+    elif fault == "outside":
+        rows[0]["T"] = 999
+    elif fault == "shape":
+        exchange.public_get_agg_trades.return_value = {"code": -1, "msg": "DO_NOT_LEAK"}
+    elif fault == "clock":
+        exchange.public_get_time.return_value["serverTime"] = 1999
+    elif fault == "route":
+        exchange.urls["api"]["public"] = "https://testnet.binance.vision/api/v3"
+    elif fault == "credentials":
+        exchange.apiKey = "DO_NOT_LEAK"
+    elif fault == "sandbox":
+        exchange.isSandboxModeEnabled = True
+    else:
+        exchange.market.return_value["spot"] = False
+    with pytest.raises((ValueError, ccxt.NotSupported)) as error:
+        await bn_window(exchange)
+    assert "DO_NOT_LEAK" not in str(error.value)
+
+
+@pytest.mark.parametrize("fault", [
+    "missing_anchor", "anchor_conflict", "duplicate", "timeout", "rate_limit", "cancel",
+])
+async def test_binance_public_window_continuation_failure_never_completes(fault):
+    import asyncio
+    exchange = binance_public_client()
+    first = [bn_row(index) for index in range(1000)]
+    second = [deepcopy(first[-1]), bn_row(1000)]
+    if fault == "missing_anchor":
+        second.pop(0)
+    elif fault == "anchor_conflict":
+        second[0]["q"] = "21"
+    elif fault == "duplicate":
+        second.append(deepcopy(second[-1]))
+
+    async def read(params):
+        if "fromId" not in params:
+            return first
+        if fault == "timeout":
+            raise TimeoutError
+        if fault == "rate_limit":
+            raise ccxt.RateLimitExceeded("DO_NOT_LEAK")
+        if fault == "cancel":
+            raise asyncio.CancelledError
+        return second
+
+    exchange.public_get_agg_trades.side_effect = read
+    with pytest.raises((ValueError, TimeoutError, ccxt.RateLimitExceeded, asyncio.CancelledError)):
+        await bn_window(exchange)
+    assert exchange.public_get_agg_trades.await_count == 2
+
+
+async def test_binance_public_window_successor_is_raw_evidence_not_in_window_turnover():
+    exchange = binance_public_client()
+    first = [bn_row(index) for index in range(1000)]
+    exchange.public_get_agg_trades.side_effect = [first, [first[-1], bn_row(1000, 2000)]]
+    proof = await bn_window(exchange)
+    assert proof["complete"] and proof["termination"] == "successor_at_or_after_cutoff"
+    assert len(proof["trades"]) == 1000
+    assert proof["native_responses"][-1]["response"][-1]["T"] == 2000
+
+
+@pytest.mark.parametrize("fault", [
+    "clock_backwards", "clock_budget", "future_trade", "future_server", "long_window", "pagination_budget",
+])
+async def test_binance_public_window_finite_clock_and_pagination_budget(fault):
+    exchange = binance_public_client()
+    if fault == "clock_backwards":
+        exchange.milliseconds.side_effect = [2000, 1999]
+    elif fault == "clock_budget":
+        exchange.milliseconds.side_effect = [2000, 7001]
+    elif fault == "future_trade":
+        first = [bn_row(index) for index in range(1000)]
+        exchange.public_get_agg_trades.side_effect = [first, [first[-1], bn_row(1000, 2001)]]
+    elif fault == "future_server":
+        exchange.public_get_time.return_value["serverTime"] = 2001
+    elif fault == "pagination_budget":
+        async def full_page(params):
+            first = params.get("fromId", 0)
+            return [bn_row(index) for index in range(first, first + 1000)]
+        exchange.public_get_agg_trades.side_effect = full_page
+    with pytest.raises(ValueError):
+        await bn_window(exchange, end=61001 if fault == "long_window" else 2000)
+    assert exchange.public_get_agg_trades.await_count <= 60
+
+
+async def test_binance_public_window_total_timeout_does_not_retry():
+    import asyncio
+    exchange = binance_public_client()
+    exchange.timeout = 1
+
+    async def blocked(params):
+        await asyncio.Event().wait()
+
+    exchange.public_get_agg_trades.side_effect = blocked
+    with pytest.raises(TimeoutError):
+        await bn_window(exchange)
+    exchange.public_get_agg_trades.assert_awaited_once()
 
 
 def client():
