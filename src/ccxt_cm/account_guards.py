@@ -156,7 +156,7 @@ async def fetch_binance_spot_public_window(exchange, symbol, *, start_ms, end_ms
                 params.update(startTime=start_ms, endTime=end_ms - 1)
             else:
                 params["fromId"] = anchor["a"]
-            raw = await exchange.public_get_agg_trades(dict(params))
+            raw = await exchange.publicGetAggTrades(dict(params))
             require(isinstance(raw, list) and len(raw) <= 1000, "response_shape")
             pages.append({"query": params, "response": deepcopy(raw)})
             if anchor is not None:
