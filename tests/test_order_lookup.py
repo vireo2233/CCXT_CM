@@ -192,7 +192,8 @@ async def test_single_match_with_cursor_is_not_returned_until_explicit_last_page
 )
 async def test_later_pages_cannot_hide_duplicates_foreign_rows_or_truncation(exchange, second):
     exchange.fetch.side_effect = [
-        payload([ROW], nextPageCursor="first-page"), copy.deepcopy(second)
+        payload([ROW], nextPageCursor="first-page"),
+        copy.deepcopy(second),
     ]
     exchange.parse_order = Mock(wraps=exchange.parse_order)
     with pytest.raises(ClientOrderLookupUnconfirmed) as result:
@@ -244,7 +245,7 @@ async def test_total_deadline_includes_empty_realtime_and_history(exchange, monk
     with pytest.raises(ClientOrderLookupUnconfirmed, match="deadline"):
         await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
     assert exchange.fetch.await_count == 2
-    timeout.assert_called_once_with(.025)
+    timeout.assert_called_once_with(0.025)
 
 
 async def test_shorter_caller_timeout_still_cancels_lookup(exchange):
@@ -254,7 +255,7 @@ async def test_shorter_caller_timeout_still_cancels_lookup(exchange):
 
     exchange.fetch.side_effect = slow_fetch
     with pytest.raises(TimeoutError):
-        async with asyncio.timeout(.001):
+        async with asyncio.timeout(0.001):
             await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
     exchange.fetch.assert_awaited_once()
 
