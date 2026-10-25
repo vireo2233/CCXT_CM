@@ -167,3 +167,7 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 13 课：Bifu WebSocket](docs/learning/13-bifu-websocket.md)：理解公共/私有实时流、签名鉴权、订单簿断档和可重复验收命令。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
 - [Bifu 最终交付说明](docs/acceptance/bifu-final-delivery.md)：三部分完成范围、最终测试、修复、构建产物和已知边界。
+
+## Coinmaker 协作规范
+
+本仓库参与 Coinmaker 五仓协作，遵循[统一版本管理规范](https://github.com/vireo2233/market_maker_v3/blob/7af95cfb4281c770e412e1d0b2a1706151a0a007/docs/Coinmaker多仓库协作与版本管理规范.md)（私有文档，需要团队访问权限）。规范只在 `market_maker_v3` 维护；此链接固定本次入库版本，后续规则变更通过 PR 更新引用。

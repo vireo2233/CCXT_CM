@@ -2,9 +2,14 @@
 
 import ccxt
 
+from .account_guards import verify_bybit_testnet_account
 from .base import AsyncExchange, Exchange
 from .capabilities import SpecialMethod, capability, require_capabilities, special_methods
 from .exchanges.bifu import BIFU_EXTENSION
+from .order_lookup import (
+    ClientOrderLookupUnconfirmed,
+    fetch_bybit_testnet_spot_order_by_client_id,
+)
 from .registry import (
     Extension,
     Mode,
@@ -35,4 +40,7 @@ __all__ = [
     "register",
     "require_capabilities",
     "special_methods",
+    "verify_bybit_testnet_account",
+    "ClientOrderLookupUnconfirmed",
+    "fetch_bybit_testnet_spot_order_by_client_id",
 ]
