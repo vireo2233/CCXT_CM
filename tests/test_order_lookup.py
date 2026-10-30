@@ -326,3 +326,82 @@ async def test_parser_exception_never_exposes_native_fields(exchange):
         await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
     assert "fixture-secret" not in str(result.value)
     assert result.value.__suppress_context__
+
+
+async def test_complete_current_open_orders_follows_all_pages_and_keeps_manual_orders(exchange):
+    from ccxt_cm import fetch_open_orders_complete
+
+    pages = []
+    for n in range(25):
+        row = dict(
+            ROW,
+            orderId=str(n),
+            orderLinkId="" if n == 0 else "owned-" + str(n),
+            orderStatus="New",
+            cumExecQty="0",
+            cumExecValue="0",
+            leavesQty="2",
+        )
+        pages.append(payload([row], nextPageCursor=str(n + 1) if n < 24 else ""))
+    exchange.fetch.side_effect = pages
+    result = await fetch_open_orders_complete(exchange, SYMBOL)
+    assert len(result) == 25 and result[0]["clientOrderId"] in ("", None)
+    assert exchange.fetch.await_count == 25
+    query = parse_qs(urlsplit(exchange.fetch.await_args.args[0]).query)
+    assert query["cursor"] == ["24"] and query["openOnly"] == ["0"] and "startTime" not in query
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing_cursor", "loop", "empty_continuation", "duplicate", "wrong_symbol"]
+)
+async def test_complete_directory_rejects_partial_or_conflicting_pages(exchange, fault):
+    from ccxt_cm import fetch_open_orders_complete
+
+    row = dict(ROW, orderStatus="New")
+    first = payload([row], nextPageCursor="next")
+    second = payload([dict(row, orderId="second")])
+    if fault == "missing_cursor":
+        first["result"].pop("nextPageCursor")
+    elif fault == "loop":
+        second["result"]["nextPageCursor"] = "next"
+    elif fault == "empty_continuation":
+        first["result"]["list"] = []
+    elif fault == "duplicate":
+        second["result"]["list"] = [row]
+    else:
+        second["result"]["list"][0]["symbol"] = "OTHER"
+    exchange.fetch.side_effect = [first, second]
+    with pytest.raises(ClientOrderLookupUnconfirmed):
+        await fetch_open_orders_complete(exchange, SYMBOL)
+
+
+@pytest.mark.parametrize("count", [8192, 8193])
+async def test_complete_directory_capacity_applies_to_terminal_page_too(exchange, count):
+    from ccxt_cm import fetch_open_orders_complete
+
+    pages = []
+    for first in range(0, count, 50):
+        rows = [
+            dict(ROW, orderId=str(n), orderStatus="New")
+            for n in range(first, min(first + 50, count))
+        ]
+        pages.append(payload(rows, nextPageCursor=str(first + 50) if first + 50 < count else ""))
+    exchange.fetch.side_effect = pages
+    if count == 8192:
+        assert len(await fetch_open_orders_complete(exchange, SYMBOL)) == count
+    else:
+        with pytest.raises(ClientOrderLookupUnconfirmed, match="capacity"):
+            await fetch_open_orders_complete(exchange, SYMBOL)
+
+
+@pytest.mark.parametrize("parsed", [None, [], 1, "exception"])
+async def test_complete_directory_parser_failure_remains_unconfirmed_and_redacted(exchange, parsed):
+    from ccxt_cm import fetch_open_orders_complete
+
+    if parsed == "exception":
+        exchange.parse_order = Mock(side_effect=ValueError("fixture-secret-parser"))
+    else:
+        exchange.parse_order = Mock(return_value=parsed)
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="mapping") as result:
+        await fetch_open_orders_complete(exchange, SYMBOL)
+    assert "fixture-secret" not in str(result.value)

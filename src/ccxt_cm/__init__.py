@@ -9,6 +9,7 @@ from .exchanges.bifu import BIFU_EXTENSION
 from .order_lookup import (
     ClientOrderLookupUnconfirmed,
     fetch_bybit_testnet_spot_order_by_client_id,
+    fetch_open_orders_complete,
 )
 from .registry import (
     Extension,
@@ -43,4 +44,5 @@ __all__ = [
     "verify_bybit_testnet_account",
     "ClientOrderLookupUnconfirmed",
     "fetch_bybit_testnet_spot_order_by_client_id",
+    "fetch_open_orders_complete",
 ]

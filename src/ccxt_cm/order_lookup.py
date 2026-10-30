@@ -117,3 +117,65 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
             "Exact order lookup deadline remains unconfirmed"
         ) from None
     raise ClientOrderLookupUnconfirmed("Original order outcome remains unknown after exact queries")
+
+
+async def fetch_open_orders_complete(exchange, symbol):
+    """Complete, bounded-current open-order directory; no historical adoption.
+
+    Only the already guarded spot adapter is implemented here. Other venues
+    must explicitly implement completeness rather than inheriting truncated data.
+    """
+    _require_bybit_testnet_spot(exchange)
+    market = exchange.market(symbol)
+    params = {
+        "category": "spot",
+        "symbol": market["id"],
+        "openOnly": 0,
+        "orderFilter": "Order",
+        "limit": 50,
+    }
+    orders, cursors = {}, set()
+    while True:
+        async with asyncio.timeout(exchange.timeout / 1000):
+            raw = await exchange.private_get_v5_order_realtime(dict(params))
+        result = raw.get("result") if isinstance(raw, dict) else None
+        if (
+            not isinstance(result, dict)
+            or raw.get("retCode") != 0
+            or not isinstance(result.get("list"), list)
+            or len(result["list"]) > 50
+            or not isinstance(result.get("nextPageCursor"), str)
+        ):
+            raise ClientOrderLookupUnconfirmed("Open-order directory is incomplete")
+        for row in result["list"]:
+            if (
+                not isinstance(row, dict)
+                or row.get("symbol") != market["id"]
+                or not row.get("orderId")
+                or row["orderId"] in orders
+            ):
+                raise ClientOrderLookupUnconfirmed("Open-order directory identity conflict")
+            try:
+                order = exchange.parse_order(row, market)
+            except Exception:
+                raise ClientOrderLookupUnconfirmed("Open-order mapping is unconfirmed") from None
+            if (
+                not isinstance(order, dict)
+                or order.get("id") != row["orderId"]
+                or order.get("symbol") != symbol
+            ):
+                raise ClientOrderLookupUnconfirmed("Open-order mapping is unconfirmed")
+            if len(orders) >= 8192:
+                raise ClientOrderLookupUnconfirmed(
+                    "Open-order directory exceeds current-state capacity"
+                )
+            orders[row["orderId"]] = order
+        cursor = result["nextPageCursor"]
+        if not cursor:
+            return list(orders.values())
+        if not result["list"] or cursor in cursors or len(orders) >= 8192:
+            raise ClientOrderLookupUnconfirmed(
+                "Open-order directory exceeds current-state capacity"
+            )
+        cursors.add(cursor)
+        params["cursor"] = cursor
