@@ -138,36 +138,6 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect
 uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 ```
 
-## 文档索引
-
-- [架构与边界](docs/architecture.md)：类关系、调用链、生命周期、升级策略。
-- [标准接口与数据契约](docs/interface-contract.md)：REST / WS / 能力 / 精度 / 错误。
-- [新增交易所规范](docs/adding-exchanges.md)：目录、模板、发布检查表、entry point。
-- [特殊接口](docs/special-apis.md)：标准参数、原始接口、专有方法。
-- [WebSocket 规范](docs/websocket.md)：认证、快照、增量、断档、重连、缓存。
-- [测试与验收](docs/testing.md)：离线/本地协议/真实环境的证据边界。
-- [本地参考协议](docs/reference-protocol.md)：演示实现的明确范围。
-- [Antarctic 审计](docs/exchanges/antarctic.md)：已发现缺陷、迁移前提。
-- [market_maker_v2 接入方案](docs/market-maker-v2.md)：当前代码映射，不声称已接入。
-- [来源与依赖](docs/sources.md)、[变更记录](CHANGELOG.md)、[贡献说明](CONTRIBUTING.md)。
-
-- [第 0 课：先看懂 CCXT](docs/learning/00-ccxt-core.md)：零基础理解统一接口，并完成第一次只读实验。
-- [第 1 课：Bifu 测试与生产环境](docs/learning/01-bifu-environment.md)：创建实例并防止环境、地址和凭据混用。
-- [第 2 课：Bifu `load_markets`](docs/learning/02-bifu-load-markets.md)：理解交易对、精度和限额并完成只读验收。
-- [第 3 课：Bifu `fetch_ticker` / `fetch_bids_asks`](docs/learning/03-bifu-fetch-ticker.md)：理解 24 小时行情、真实买一卖一和完整盘口的边界。
-- [第 4 课：Bifu 私有订单查询](docs/learning/04-bifu-private-orders.md)：区分当前挂单、历史订单、单笔订单和自己的成交记录。
-- [第 5 课：Bifu 限价下单与单笔撤单](docs/learning/05-bifu-create-cancel-order.md)：理解受理回执、POST_ONLY、最终状态复查和测试环境写入保护。
-- [第 6 课：Bifu 市价买单和市价卖单](docs/learning/06-bifu-market-order.md)：理解买入预算、卖出数量、IOC 和真实成交验收。
-- [第 7 课：Bifu 撤销一个交易对的全部挂单](docs/learning/07-bifu-cancel-all-orders.md)：理解影响范围、受理计数和安全验收边界。
-- [第 8 课：Bifu 批量下单与批量撤单](docs/learning/08-bifu-batch-orders.md)：理解同序逐笔回执、部分拒绝、批量受理与最终状态复查。
-- [第 9 课：Bifu 单笔改单与批量改单](docs/learning/09-bifu-amend-orders.md)：理解原生改单、总数量、逐项受理、最终状态复查和超时安全边界。
-- [第 10 课：Bifu 资金流水](docs/learning/10-bifu-fund-flows.md)：理解余额快照与流水、流入流出、CCXT Ledger 结构、分页和脱敏验收。
-- [第 11 课：Bifu 错误映射](docs/learning/11-bifu-errors.md)：理解业务码、CCXT 异常，以及写入结果未知时为什么必须先查单再决定是否重试。
-- [第 12 课：Bifu 特殊 `mock`](docs/learning/12-bifu-mock.md)：理解 `SANDBOX_MARKET`、专有方法、买卖数量单位和 Sandbox 账户权限。
-- [第 13 课：Bifu WebSocket](docs/learning/13-bifu-websocket.md)：理解公共/私有实时流、签名鉴权、订单簿断档和可重复验收命令。
-- [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
-- [Bifu 最终交付说明](docs/acceptance/bifu-final-delivery.md)：三部分完成范围、最终测试、修复、构建产物和已知边界。
-
 ## Coinmaker 协作规范
 
 本仓库参与 Coinmaker 五仓协作，遵循[统一版本管理规范](https://github.com/vireo2233/market_maker_v3/blob/7af95cfb4281c770e412e1d0b2a1706151a0a007/docs/Coinmaker多仓库协作与版本管理规范.md)（私有文档，需要团队访问权限）。规范只在 `market_maker_v3` 维护；此链接固定本次入库版本，后续规则变更通过 PR 更新引用。
