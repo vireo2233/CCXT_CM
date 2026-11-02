@@ -407,24 +407,36 @@ async def test_complete_directory_parser_failure_remains_unconfirmed_and_redacte
     assert "fixture-secret" not in str(result.value)
 
 
-@pytest.mark.parametrize("code,definite", [(170131, True), (170193, True), (170141, False),
-                                         (170146, False), (10006, False), (999999, False)])
+@pytest.mark.parametrize(
+    "code,definite",
+    [
+        (170131, True),
+        (170193, True),
+        (170141, False),
+        (170146, False),
+        (10006, False),
+        (999999, False),
+    ],
+)
 def test_order_errors_keep_codes_not_transport_text_or_credentials(code, definite):
     from ccxt_cm.order_lookup import order_error_diagnostic
 
-    diagnostic = order_error_diagnostic(ccxt.ExchangeError(
-        f'bybit {{"retCode":{code},"retMsg":"fixture-secret https://secret",'
-        '"result":{"api_key":"fixture-key"}}'
-    ))
+    diagnostic = order_error_diagnostic(
+        ccxt.ExchangeError(
+            f'bybit {{"retCode":{code},"retMsg":"fixture-secret https://secret",'
+            '"result":{"api_key":"fixture-key"}}'
+        )
+    )
     assert diagnostic["error_code"] == code
     assert diagnostic["definite_rejection"] is definite
     assert "fixture-" not in str(diagnostic) and "https" not in str(diagnostic)
 
 
 async def test_lookup_failure_keeps_exact_stage_and_code_not_a_create_rejection(exchange):
-    exchange.fetch.side_effect = [payload([]), ccxt.ExchangeError(
-        'bybit {"retCode":170131,"retMsg":"fixture-secret"}'
-    )]
+    exchange.fetch.side_effect = [
+        payload([]),
+        ccxt.ExchangeError('bybit {"retCode":170131,"retMsg":"fixture-secret"}'),
+    ]
     with pytest.raises(ClientOrderLookupUnconfirmed) as error:
         await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
     assert error.value.diagnostic["step"] == "order_history"

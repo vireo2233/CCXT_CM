@@ -112,7 +112,7 @@ class BifuREST(AsyncExchange):
         SpecialMethod(
             "create_mock_order",
             "Create one Bifu sandbox-only simulated market order",
-            "docs/learning/12-bifu-mock.md",
+            "docs/special-apis.md",
             private=True,
             mutating=True,
             returns="CCXT Order with raw Bifu acknowledgement in info",
