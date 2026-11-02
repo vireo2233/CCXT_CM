@@ -29,26 +29,37 @@ def order_error_diagnostic(exc):
     result = {"error_type": type(exc).__name__, "reason": "response_unconfirmed"}
     try:
         text = str(exc)[:8192]
-        raw, _ = json.JSONDecoder().raw_decode(text[text.index("{"):])
+        raw, _ = json.JSONDecoder().raw_decode(text[text.index("{") :])
     except (ValueError, TypeError):
         return result
     if not isinstance(raw, dict) or type(raw.get("retCode")) is not int:
         return result
     code = raw["retCode"]
     reasons = {
-        10001: "invalid_request_parameters", 10002: "request_time_window_expired",
-        10003: "invalid_api_key", 10004: "invalid_signature", 10005: "permission_denied",
-        10006: "rate_limit", 110072: "duplicate_client_order_id",
-        170131: "insufficient_balance", 170132: "price_too_high",
-        170133: "price_below_minimum", 170134: "price_precision_invalid",
-        170136: "quantity_below_minimum", 170137: "quantity_precision_invalid",
-        170140: "order_value_below_minimum", 170141: "duplicate_client_order_id",
-        170146: "creation_timeout", 170193: "buy_price_above_limit",
-        170194: "sell_price_below_limit", 170210: "new_order_rejected",
+        10001: "invalid_request_parameters",
+        10002: "request_time_window_expired",
+        10003: "invalid_api_key",
+        10004: "invalid_signature",
+        10005: "permission_denied",
+        10006: "rate_limit",
+        110072: "duplicate_client_order_id",
+        170131: "insufficient_balance",
+        170132: "price_too_high",
+        170133: "price_below_minimum",
+        170134: "price_precision_invalid",
+        170136: "quantity_below_minimum",
+        170137: "quantity_precision_invalid",
+        170140: "order_value_below_minimum",
+        170141: "duplicate_client_order_id",
+        170146: "creation_timeout",
+        170193: "buy_price_above_limit",
+        170194: "sell_price_below_limit",
+        170210: "new_order_rejected",
     }
     result.update(error_code=code, reason=reasons.get(code, "exchange_error_text_redacted"))
     result["definite_rejection"] = (
-        isinstance(exc, ExchangeError) and code in reasons
+        isinstance(exc, ExchangeError)
+        and code in reasons
         and code not in (10006, 110072, 170141, 170146)
     )
     return result
@@ -135,7 +146,8 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
                     rows = await _exact_rows(method, params)
                 except ClientOrderLookupUnconfirmed as exc:
                     exc.diagnostic["step"] = (
-                        "order_realtime" if method == exchange.private_get_v5_order_realtime
+                        "order_realtime"
+                        if method == exchange.private_get_v5_order_realtime
                         else "order_history"
                     )
                     raise
@@ -146,9 +158,12 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
                     order = exchange.parse_order(row, market)
                 except Exception as exc:
                     raise ClientOrderLookupUnconfirmed(
-                        "Parsed order lookup response is unconfirmed", {
-                            "step": "order_parse", "reason": "order_parse_failed",
-                            "error_type": type(exc).__name__, "order_id": row["orderId"],
+                        "Parsed order lookup response is unconfirmed",
+                        {
+                            "step": "order_parse",
+                            "reason": "order_parse_failed",
+                            "error_type": type(exc).__name__,
+                            "order_id": row["orderId"],
                             "client_order_id": client_order_id,
                         },
                     ) from None
@@ -159,9 +174,12 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
                     or order.get("symbol") != market["symbol"]
                 ):
                     raise ClientOrderLookupUnconfirmed(
-                        "Parsed order lookup identity is unconfirmed", {
-                            "step": "order_parse", "reason": "parsed_order_identity_mismatch",
-                            "order_id": row["orderId"], "client_order_id": client_order_id,
+                        "Parsed order lookup identity is unconfirmed",
+                        {
+                            "step": "order_parse",
+                            "reason": "parsed_order_identity_mismatch",
+                            "order_id": row["orderId"],
+                            "client_order_id": client_order_id,
                         },
                     )
                 return order
