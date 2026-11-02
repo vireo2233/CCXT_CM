@@ -9,6 +9,32 @@ from urllib.parse import urlsplit
 from ccxt import AuthenticationError, NotSupported, PermissionDenied
 
 
+def preserve_bybit_wallet_time(exchange):
+    """Keep wallet creationTime through the pinned Pro parser, on this client only.
+
+    Upstream reads `ts` for all balance topics, discarding wallet creationTime.
+    Alias the documented source field before its existing parser; never use the
+    receive clock or patch the installed CCXT class/global factory.
+    """
+    if getattr(exchange, "id", None) != "bybit" or not callable(
+        getattr(exchange, "handle_balance", None)
+    ):
+        return
+    original = exchange.handle_balance
+    if getattr(original, "_cm_wallet_time", False):
+        return
+
+    def handle_balance(client, message):
+        if isinstance(message, dict) and message.get("topic") == "wallet":
+            source = message.get("creationTime")
+            if type(source) is int and source > 0:
+                message = dict(message, ts=source)
+        return original(client, message)
+
+    handle_balance._cm_wallet_time = True
+    exchange.handle_balance = handle_balance
+
+
 def _require_bybit_testnet_spot(exchange) -> None:
     """Check existing REST/Pro routing locally, before any network request."""
     if exchange.id != "bybit" or exchange.isSandboxModeEnabled is not True:
