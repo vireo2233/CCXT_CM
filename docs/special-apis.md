@@ -45,8 +45,30 @@ for spec in special_methods(exchange):
 Bifu 的模拟刷量使用现货下单地址，但协议类型是 `SANDBOX_MARKET`，且只允许 Sandbox 账户。
 它不是 CCXT 标准下单能力，因此由 `create_mock_order(symbol, side, value, params=None)` 单独暴露，
 并声明为 private、mutating 的 `SpecialMethod`。标准 `create_order` 不接受 `mock` 或
-`SANDBOX_MARKET`。完整参数、返回和验收边界见
-[第 12 课](learning/12-bifu-mock.md)。
+`SANDBOX_MARKET`。
+
+底层端点为 `POST /spot/v1/order`，固定发送 `type=SANDBOX_MARKET`、
+`time_in_force=IOC`，限流成本为 `1`。调用前必须执行 `set_sandbox_mode(True)`；
+普通账户缺少 Sandbox 权限时会抛出 `AccountNotEnabled`。
+
+| 参数 | 含义 |
+|---|---|
+| `symbol` | CCXT 标准现货交易对，例如 `BTC/USDT` |
+| `side` | `buy` 或 `sell` |
+| `value` | 买入时是计价币金额（`quote_qty`），卖出时是基础币数量（`qty`） |
+| `params.clientOrderId` | 本轮客户端关联标识；遵守服务端唯一性要求 |
+| `params.price` | 可选的最差接受价保护 |
+
+数量与金额按市场精度和限额校验。返回标准 CCXT Order，原始受理回执放在 `info`，
+`status=None`；受理不等于最终成交。该模拟订单不进入真实订单簿、不与盘口订单撮合。
+验收时按订单身份查询 `fetch_my_trades`，并确认 `fetch_open_orders` 不含该订单。
+写请求超时后先按原订单或客户端标识查单、查成交，不能直接重发。
+
+Sandbox 验收命令：
+
+```bash
+python -m examples.accept_bifu_mock_order BTC/USDT buy 5.5 --confirm BIFU_TEST_MOCK_WRITE
+```
 
 ## 每个专有方法的文档至少包含
 
