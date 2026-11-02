@@ -1025,7 +1025,7 @@ async def test_bifu_declares_mock_as_a_private_mutating_special_method():
             {
                 "method": "create_mock_order",
                 "description": "Create one Bifu sandbox-only simulated market order",
-                "documentation": "docs/learning/12-bifu-mock.md",
+                "documentation": "docs/special-apis.md",
                 "private": True,
                 "mutating": True,
                 "returns": "CCXT Order with raw Bifu acknowledgement in info",
