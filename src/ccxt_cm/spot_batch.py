@@ -97,9 +97,20 @@ async def submit_spot_batch(exchange, symbol, operation, items, identity):
         requests.append(row)
     if len(set(keys)) != len(keys):
         raise ValueError("Batch identities must be unique")
-    method = getattr(exchange, "private_post_v5_order_" + operation + "_batch")
+    path = caps["endpoint"].lstrip("/")
+    config = dict(exchange.api["private"]["post"][path])
+    # Spot batch quota counts children, not just HTTP requests. Reuse the
+    # existing CCXT token bucket and conservative endpoint weight per child.
+    config["cost"] *= len(items)
     async with asyncio.timeout(exchange.timeout / 1000):
-        raw = await method({"category": "spot", "request": requests})
+        raw = await exchange.request(
+            path, "private", "POST", {
+                "category": "spot", "request": requests,
+                # fetch2 consumes this control before signing. A lost write
+                # reply must be resolved by the original ID, never replayed.
+                "maxRetriesOnFailure": 0,
+            }, config=config,
+        )
     result_info = raw.get("result") if isinstance(raw, dict) else None
     error_info = raw.get("retExtInfo") if isinstance(raw, dict) else None
     rows = result_info.get("list") if isinstance(result_info, dict) else None

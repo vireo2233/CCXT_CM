@@ -101,6 +101,25 @@ async def test_native_create_one_real_endpoint_mixed_sides_unordered_item_mappin
     assert "fixture-secret" not in str(result)
 
 
+@pytest.mark.parametrize("operation", ["create", "cancel"])
+async def test_batch_rate_limit_weights_children_without_changing_endpoint_metadata(
+    exchange, operation,
+):
+    path = "/v5/order/" + operation + "-batch"
+    metadata = copy.deepcopy(exchange.api["private"]["post"][path.lstrip("/")])
+    exchange.enableRateLimit = True
+    exchange.throttle = AsyncMock()
+    exchange.fetch.return_value = response(
+        [row("cm-buy", "buy-id"), row("cm-sell", "sell-id")], [0, 0],
+    )
+    items = ORDERS if operation == "create" else ["buy-id", "sell-id"]
+    await submit_spot_batch(exchange, SYMBOL, operation, items, IDENTITY)
+    exchange.throttle.assert_awaited_once_with(metadata["cost"] * len(items))
+    assert exchange.api["private"]["post"][path.lstrip("/")] == metadata
+    exchange.fetch.assert_awaited_once()
+    assert urlsplit(exchange.fetch.call_args.args[0]).path == path
+
+
 @pytest.mark.parametrize("code,outcome", [(170193, "not_created"), (170131, "not_created"),
                                         (170146, "unknown"), (170141, "unknown"),
                                         (10006, "unknown"), (987654, "unknown")])
@@ -193,10 +212,13 @@ async def test_missing_cancel_response_keeps_each_original_order_identity(exchan
 @pytest.mark.parametrize("failure", [ccxt.RequestTimeout, ccxt.RateLimitExceeded,
                                     ccxt.PermissionDenied])
 async def test_batch_transport_errors_never_switch_or_resend(exchange, failure):
+    exchange.options["maxRetriesOnFailure"] = 3
     exchange.fetch.side_effect = failure("fixture-secret")
     with pytest.raises(failure):
         await submit_spot_batch(exchange, SYMBOL, "create", ORDERS, IDENTITY)
     exchange.fetch.assert_awaited_once()
+    assert exchange.options["maxRetriesOnFailure"] == 3
+    assert "maxRetriesOnFailure" not in exchange.fetch.call_args.args[3]
 
 
 async def test_validate_limit_identities_and_all_requests_before_native_write(exchange):
