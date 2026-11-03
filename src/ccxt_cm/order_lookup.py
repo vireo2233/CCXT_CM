@@ -65,7 +65,7 @@ def order_error_diagnostic(exc):
     return result
 
 
-async def _exact_rows(method, params):
+async def _exact_rows(method, params, *, expected_order_id=None):
     rows, cursors = [], set()
     params = dict(params)
     for _ in range(_MAX_LOOKUP_PAGES):
@@ -96,6 +96,16 @@ async def _exact_rows(method, params):
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", row["orderId"])
             ):
                 raise ClientOrderLookupUnconfirmed("Exact order lookup identity is unconfirmed")
+            if expected_order_id is not None and row["orderId"] != expected_order_id:
+                raise ClientOrderLookupUnconfirmed(
+                    "Exact original order ID is unconfirmed",
+                    {
+                        "reason": "original_order_id_mismatch",
+                        "order_id": row["orderId"],
+                        "expected_order_id": expected_order_id,
+                        "client_order_id": params["orderLinkId"],
+                    },
+                )
             rows.append(row)
         if len(rows) > 1:
             raise ClientOrderLookupUnconfirmed("Exact order lookup is not unique")
@@ -109,12 +119,15 @@ async def _exact_rows(method, params):
     raise ClientOrderLookupUnconfirmed("Exact order lookup page limit remains unconfirmed")
 
 
-async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_order_id):
+async def fetch_bybit_testnet_spot_order_by_client_id(
+    exchange, symbol, client_order_id, *, expected_order_id=None
+):
     """Use official implicit endpoints, preserving cardinality before parsing.
 
     Official CCXT fetch_order forwards orderLinkId but selects only the first
     realtime row. Here complete pagination, cardinality and raw symbol are checked.
     Empty realtime/history responses never prove that a write did not happen.
+    An expected order ID binds the unique raw and parsed result to that original.
     The existing CCXT request timeout bounds the entire lookup, not each page;
     a caller's shorter timeout/cancellation still takes precedence.
     """
@@ -123,6 +136,11 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
         r"[A-Za-z0-9_-]{1,36}", client_order_id
     ):
         raise ValueError("A valid original Bybit client order ID is required")
+    if expected_order_id is not None and (
+        not isinstance(expected_order_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", expected_order_id)
+    ):
+        raise ValueError("A valid original Bybit order ID is required")
     market = exchange.market(symbol)
     if market.get("spot") is not True or not isinstance(market.get("id"), str):
         raise NotSupported("Client-identity lookup requires an already loaded spot market")
@@ -143,7 +161,7 @@ async def fetch_bybit_testnet_spot_order_by_client_id(exchange, symbol, client_o
                 exchange.private_get_v5_order_history,
             ):
                 try:
-                    rows = await _exact_rows(method, params)
+                    rows = await _exact_rows(method, params, expected_order_id=expected_order_id)
                 except ClientOrderLookupUnconfirmed as exc:
                     exc.diagnostic["step"] = (
                         "order_realtime"

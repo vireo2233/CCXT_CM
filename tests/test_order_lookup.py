@@ -119,6 +119,91 @@ async def test_empty_realtime_queries_history_with_identical_original_identity(e
         assert_exact_request(call, path)
 
 
+@pytest.mark.parametrize("history", [False, True])
+async def test_expected_order_id_preserves_original_identity_and_query_priority(exchange, history):
+    row = dict(
+        ROW, qty="21.93396", price="0.24431960", cumExecQty="0", cumExecValue="0",
+        leavesQty="21.93396", avgPrice="",
+    )
+    original = copy.deepcopy(row)
+    exchange.fetch.side_effect = ([payload([])] if history else []) + [payload([row])]
+    result = await fetch_bybit_testnet_spot_order_by_client_id(
+        exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+    )
+    assert result["id"] == ROW["orderId"] and result["clientOrderId"] == CLIENT_ID
+    assert result["status"] == "canceled" and result["filled"] == 0
+    assert result["amount"] == 21.93396 and result["price"] == 0.24431960
+    assert row == original
+    assert exchange.fetch.await_count == (2 if history else 1)
+    for call, path in zip(
+        exchange.fetch.await_args_list,
+        (["/v5/order/realtime"] if history else [])
+        + (["/v5/order/history"] if history else ["/v5/order/realtime"]),
+        strict=True,
+    ):
+        assert_exact_request(call, path)  # Expected OID is a guard, not another query/filter.
+
+
+@pytest.mark.parametrize("history", [False, True])
+async def test_expected_order_id_conflict_is_unknown_before_parse(exchange, history):
+    exchange.fetch.side_effect = ([payload([])] if history else []) + [
+        payload([dict(ROW, orderId="foreign-order-id")])
+    ]
+    exchange.parse_order = Mock(wraps=exchange.parse_order)
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert error.value.diagnostic == {
+        "reason": "original_order_id_mismatch",
+        "order_id": "foreign-order-id",
+        "expected_order_id": ROW["orderId"],
+        "client_order_id": CLIENT_ID,
+        "step": "order_history" if history else "order_realtime",
+    }
+    assert not getattr(error.value, "order_not_created", False)
+    assert exchange.fetch.await_count == (2 if history else 1)
+    exchange.parse_order.assert_not_called()
+
+
+async def test_expected_order_id_must_survive_parsing(exchange):
+    order = exchange.parse_order(copy.deepcopy(ROW), exchange.market(SYMBOL))
+    exchange.parse_order = Mock(return_value=dict(order, id="foreign-parsed-id"))
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert error.value.diagnostic["reason"] == "parsed_order_identity_mismatch"
+    exchange.fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("identity", ["", 1, True, "with space", "x" * 129])
+async def test_invalid_expected_order_id_never_sends(exchange, identity):
+    with pytest.raises(ValueError, match="original Bybit order ID"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=identity
+        )
+    exchange.fetch.assert_not_awaited()
+
+
+async def test_expected_order_id_does_not_relax_page_uniqueness_or_empty_results(exchange):
+    exchange.fetch.side_effect = [
+        payload([copy.deepcopy(ROW)], nextPageCursor="next-page"), payload([copy.deepcopy(ROW)])
+    ]
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="not unique"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert exchange.fetch.await_count == 2
+    exchange.fetch.reset_mock(side_effect=True)
+    exchange.fetch.return_value = payload([])
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="remains unknown"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert exchange.fetch.await_count == 2
+
+
 async def test_empty_both_does_not_prove_order_was_never_created(exchange):
     exchange.fetch.return_value = payload([])
     with pytest.raises(ClientOrderLookupUnconfirmed, match="remains unknown") as result:
