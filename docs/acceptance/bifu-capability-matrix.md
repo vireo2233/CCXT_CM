@@ -121,7 +121,7 @@ Jacky 手动命令与结果：
 
 > 下列“阶段 0/1/2/3a”是三部分计划确定前的历史验收快照，其中关于手工注册、禁止生产 URL、
 > 能力仍为 False 等描述只反映当时版本，不能作为当前使用说明。当前行为以本文件顶部三部分计划、
-> `docs/learning/01-bifu-environment.md` 和现行代码为准。
+> `docs/testing.md` 和现行代码为准。
 
 ### 2026-09-17：阶段 0 仓库基线与中文学习入口
 
@@ -139,7 +139,7 @@ Jacky 手动命令与结果：
   能力声明，不证明在线接口可用。
 - 公共在线检查：Binance 返回 `ExchangeNotAvailable`（连接被拒）；OKX 返回
   `RequestTimeout`。两项均未使用 Key、未下单，在线状态保持“未通过”。
-- Jacky 手动验收：未开始；完成 `docs/learning/00-ccxt-core.md` 的五个问题后再更新。
+- Jacky 手动验收：本次历史记录中未开始。
 - 双轴复审：规范审查与需求审查指出可复现命令、证据脱敏、协议来源和重复阶段编号问题，均已
   修正。变更只有文档与索引，没有新增运行时代码或调用点；敏感值扫描无命中。
 
@@ -227,8 +227,8 @@ Jacky 手动命令与结果：
   `baseVolume=0.44998`、`quoteVolume=242966.07064`。行情会变化，这些数字只作为当次链路证据。
 - 安全边界：没有使用 Key，没有访问账户，没有下单或撤单；生产 URL 仍关闭。人工验收工具首次
   超时只重试一次，核心适配器不自动重试。
-- Jacky 手动验收：未开始。运行 `uv run python -m examples.inspect_bifu_ticker BTC/USDT`，完成
-  `docs/learning/03-bifu-fetch-ticker.md` 的五个问题后再更新。
+- Jacky 手动验收：未开始。运行 `uv run python -m examples.inspect_bifu_ticker BTC/USDT`，
+  按 `docs/testing.md` 核对实际输出后再更新。
 - 复审与清理：第一轮规范审查通过；需求审查发现业务码 `6005` 被 CCXT 默认误映射为
   `ExchangeNotAvailable`，已增加明确映射和回归测试。最终双轴复审待复测后补记。
 
@@ -360,8 +360,8 @@ Jacky 手动命令与结果：
 - 复审：需求轴通过；规范轴发现拒绝/未知 ACK 回显未确认值、价格与可计算名义金额边界不足、
   公共 `params` 测试缺失及安全清理重复。四项均已修复并补测试，复审修复后重新执行全量回归、
   构建和真实测试环境验收，结果仍通过且最终挂单为 0。
-- Jacky 手动验收：未开始。按 `docs/learning/09-bifu-amend-orders.md` 执行同一验收命令并理解文末
-  问题与标准答案后，再将本项更新为“Jacky 已验收”。
+- Jacky 手动验收：未开始。使用 `examples.accept_bifu_amend_orders` 执行验收，
+  核对改单回执和最终挂单状态后再更新。
 
 ### 2026-09-20：第一部分中间验收——资金流水（程序在线通过）
 
@@ -382,8 +382,8 @@ Jacky 手动命令与结果：
   正常，不代表所有 Bifu 流水类型都已有线上样本。
 - 复审：需求轴通过；规范轴发现原始响应没有状态却填入 `status="ok"`，已改为 `None` 并同步
   测试与文档。修复后重新执行全量回归、构建和真实测试环境验收，最终双轴复审均为 PASS。
-- Jacky 手动验收：未开始。按 `docs/learning/10-bifu-fund-flows.md` 执行只读命令并理解文末问题与
-  标准答案后，再更新为“Jacky 已验收”。
+- Jacky 手动验收：未开始。使用 `examples.inspect_bifu_ledger` 执行只读查询，
+  核对流水方向、类型和分页后再更新。
 
 ### 2026-09-20：第一部分中间验收——最优买卖盘口（程序在线通过）
 
@@ -421,8 +421,8 @@ Jacky 手动命令与结果：
 - 安全：本轮不使用 Key，不访问账户，不创建、修改或撤销订单，也未连接生产环境。
 - 复审：需求轴、规范轴最终均为 PASS。规范轴发现列表类型、布尔值、无限时间和文档命名边界，
   已全部补测试并修正；修正后的全库回归、在线验收、静态检查和 wheel/sdist 构建均通过。
-- Jacky 手动验收：未开始。运行 `python -m examples.inspect_bifu_ticker BTC/USDT`，结合
-  `docs/learning/03-bifu-fetch-ticker.md` 中已经附答案的说明理解输出即可，不再单独提问。
+- Jacky 手动验收：未开始。运行 `python -m examples.inspect_bifu_ticker BTC/USDT`，
+  按 `docs/testing.md` 核对实际输出。
 
 ### 2026-09-20：第一部分中间验收——完整业务错误映射
 

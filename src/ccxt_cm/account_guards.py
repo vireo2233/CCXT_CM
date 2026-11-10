@@ -9,6 +9,32 @@ from urllib.parse import urlsplit
 from ccxt import AuthenticationError, NotSupported, PermissionDenied
 
 
+def preserve_bybit_wallet_time(exchange):
+    """Keep wallet creationTime through the pinned Pro parser, on this client only.
+
+    Upstream reads `ts` for all balance topics, discarding wallet creationTime.
+    Alias the documented source field before its existing parser; never use the
+    receive clock or patch the installed CCXT class/global factory.
+    """
+    if getattr(exchange, "id", None) != "bybit" or not callable(
+        getattr(exchange, "handle_balance", None)
+    ):
+        return
+    original = exchange.handle_balance
+    if getattr(original, "_cm_wallet_time", False):
+        return
+
+    def handle_balance(client, message):
+        if isinstance(message, dict) and message.get("topic") == "wallet":
+            source = message.get("creationTime")
+            if type(source) is int and source > 0:
+                message = dict(message, ts=source)
+        return original(client, message)
+
+    handle_balance._cm_wallet_time = True
+    exchange.handle_balance = handle_balance
+
+
 def _require_bybit_testnet_spot(exchange) -> None:
     """Check existing REST/Pro routing locally, before any network request."""
     if exchange.id != "bybit" or exchange.isSandboxModeEnabled is not True:
@@ -35,6 +61,42 @@ def _require_bybit_testnet_spot(exchange) -> None:
 
     for name, endpoint in endpoints.items():
         check_endpoint(endpoint, websocket=name == "ws")
+
+
+async def fetch_bybit_testnet_spot_price_band(exchange, symbol):
+    """Read the timestamped spot price band, not a guarantee at matching time."""
+    _require_bybit_testnet_spot(exchange)
+    market = exchange.market(symbol)
+    if market.get("spot") is not True or market.get("symbol") != symbol or not market.get("id"):
+        raise ValueError("Bybit spot price band market mismatch")
+    raw = await exchange.public_get_v5_market_price_limit(
+        {"category": "spot", "symbol": market["id"]}
+    )
+    result = raw.get("result") if isinstance(raw, dict) else None
+    if (
+        not isinstance(result, dict)
+        or type(raw.get("retCode")) is not int
+        or raw["retCode"] != 0
+        or result.get("symbol") != market["id"]
+        or type(raw.get("time")) is not int
+    ):
+        raise ValueError("Bybit spot price band unconfirmed")
+    ts, buy, sell = (result.get(k) for k in ("ts", "buyLmt", "sellLmt"))
+    if (
+        not isinstance(ts, str)
+        or not ts.isascii()
+        or not ts.isdecimal()
+        or not 0 < int(ts) <= raw["time"]
+        or not all(isinstance(v, str) for v in (buy, sell))
+    ):
+        raise ValueError("Bybit spot price band source unconfirmed")
+    try:
+        buy, sell = Decimal(buy), Decimal(sell)
+    except InvalidOperation:
+        raise ValueError("Bybit spot price band invalid") from None
+    if not (buy.is_finite() and sell.is_finite() and 0 < sell <= buy):
+        raise ValueError("Bybit spot price band invalid")
+    return {"symbol": symbol, "buy_limit": buy, "sell_limit": sell, "at_ms": int(ts)}, raw
 
 
 async def fetch_bybit_testnet_spot_public_window(exchange, symbol, *, start_ms, end_ms):

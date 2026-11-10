@@ -7,6 +7,7 @@ import pytest
 
 from ccxt_cm import account_guards, create_exchange, verify_bybit_testnet_account
 from ccxt_cm.account_guards import (
+    fetch_bybit_testnet_spot_price_band,
     fetch_bybit_testnet_spot_public_window,
     fetch_bybit_testnet_spot_smp_settings,
 )
@@ -517,6 +518,39 @@ def public_client():
         }
     )
     return exchange
+
+
+@pytest.mark.parametrize("fault", [None, "symbol", "timestamp", "code", "nan", "crossed", "route"])
+async def test_testnet_spot_price_band_requires_native_identity_and_numbers(fault):
+    exchange = public_client()
+    row = {"symbol": "JUPUSDT", "buyLmt": "0.29", "sellLmt": "0.23", "ts": "2000"}
+    raw = {"retCode": 0, "time": 2001, "result": row}
+    exchange.public_get_v5_market_price_limit = AsyncMock(return_value=raw)
+    replacements = {
+        "symbol": ("symbol", "WRONG"),
+        "timestamp": ("ts", "2002"),
+        "nan": ("buyLmt", "NaN"),
+        "crossed": ("sellLmt", "0.31"),
+    }
+    if fault in replacements:
+        field, value = replacements[fault]
+        row[field] = value
+    elif fault == "code":
+        raw["retCode"] = 10006
+    elif fault == "route":
+        exchange.isSandboxModeEnabled = False
+    if fault:
+        with pytest.raises((ValueError, ccxt.NotSupported)):
+            await fetch_bybit_testnet_spot_price_band(exchange, "JUP/USDT")
+        if fault == "route":
+            exchange.public_get_v5_market_price_limit.assert_not_awaited()
+    else:
+        data, native = await fetch_bybit_testnet_spot_price_band(exchange, "JUP/USDT")
+        assert native == raw and data["symbol"] == "JUP/USDT" and data["at_ms"] == 2000
+        assert str(data["buy_limit"]) == "0.29" and str(data["sell_limit"]) == "0.23"
+        exchange.public_get_v5_market_price_limit.assert_awaited_once_with(
+            {"category": "spot", "symbol": "JUPUSDT"}
+        )
 
 
 async def test_public_suffix_keeps_native_predecessor_and_explicit_coverage_basis():

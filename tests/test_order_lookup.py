@@ -119,6 +119,97 @@ async def test_empty_realtime_queries_history_with_identical_original_identity(e
         assert_exact_request(call, path)
 
 
+@pytest.mark.parametrize("history", [False, True])
+async def test_expected_order_id_preserves_original_identity_and_query_priority(exchange, history):
+    row = dict(
+        ROW,
+        qty="21.93396",
+        price="0.24431960",
+        cumExecQty="0",
+        cumExecValue="0",
+        leavesQty="21.93396",
+        avgPrice="",
+    )
+    original = copy.deepcopy(row)
+    exchange.fetch.side_effect = ([payload([])] if history else []) + [payload([row])]
+    result = await fetch_bybit_testnet_spot_order_by_client_id(
+        exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+    )
+    assert result["id"] == ROW["orderId"] and result["clientOrderId"] == CLIENT_ID
+    assert result["status"] == "canceled" and result["filled"] == 0
+    assert result["amount"] == 21.93396 and result["price"] == 0.24431960
+    assert row == original
+    assert exchange.fetch.await_count == (2 if history else 1)
+    for call, path in zip(
+        exchange.fetch.await_args_list,
+        (["/v5/order/realtime"] if history else [])
+        + (["/v5/order/history"] if history else ["/v5/order/realtime"]),
+        strict=True,
+    ):
+        assert_exact_request(call, path)  # Expected OID is a guard, not another query/filter.
+
+
+@pytest.mark.parametrize("history", [False, True])
+async def test_expected_order_id_conflict_is_unknown_before_parse(exchange, history):
+    exchange.fetch.side_effect = ([payload([])] if history else []) + [
+        payload([dict(ROW, orderId="foreign-order-id")])
+    ]
+    exchange.parse_order = Mock(wraps=exchange.parse_order)
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert error.value.diagnostic == {
+        "reason": "original_order_id_mismatch",
+        "order_id": "foreign-order-id",
+        "expected_order_id": ROW["orderId"],
+        "client_order_id": CLIENT_ID,
+        "step": "order_history" if history else "order_realtime",
+    }
+    assert not getattr(error.value, "order_not_created", False)
+    assert exchange.fetch.await_count == (2 if history else 1)
+    exchange.parse_order.assert_not_called()
+
+
+async def test_expected_order_id_must_survive_parsing(exchange):
+    order = exchange.parse_order(copy.deepcopy(ROW), exchange.market(SYMBOL))
+    exchange.parse_order = Mock(return_value=dict(order, id="foreign-parsed-id"))
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert error.value.diagnostic["reason"] == "parsed_order_identity_mismatch"
+    exchange.fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("identity", ["", 1, True, "with space", "x" * 129])
+async def test_invalid_expected_order_id_never_sends(exchange, identity):
+    with pytest.raises(ValueError, match="original Bybit order ID"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=identity
+        )
+    exchange.fetch.assert_not_awaited()
+
+
+async def test_expected_order_id_does_not_relax_page_uniqueness_or_empty_results(exchange):
+    exchange.fetch.side_effect = [
+        payload([copy.deepcopy(ROW)], nextPageCursor="next-page"),
+        payload([copy.deepcopy(ROW)]),
+    ]
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="not unique"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert exchange.fetch.await_count == 2
+    exchange.fetch.reset_mock(side_effect=True)
+    exchange.fetch.return_value = payload([])
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="remains unknown"):
+        await fetch_bybit_testnet_spot_order_by_client_id(
+            exchange, SYMBOL, CLIENT_ID, expected_order_id=ROW["orderId"]
+        )
+    assert exchange.fetch.await_count == 2
+
+
 async def test_empty_both_does_not_prove_order_was_never_created(exchange):
     exchange.fetch.return_value = payload([])
     with pytest.raises(ClientOrderLookupUnconfirmed, match="remains unknown") as result:
@@ -326,3 +417,130 @@ async def test_parser_exception_never_exposes_native_fields(exchange):
         await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
     assert "fixture-secret" not in str(result.value)
     assert result.value.__suppress_context__
+
+
+async def test_complete_current_open_orders_follows_all_pages_and_keeps_manual_orders(exchange):
+    from ccxt_cm import fetch_open_orders_complete
+
+    pages = []
+    for n in range(25):
+        row = dict(
+            ROW,
+            orderId=str(n),
+            orderLinkId="" if n == 0 else "owned-" + str(n),
+            orderStatus="New",
+            cumExecQty="0",
+            cumExecValue="0",
+            leavesQty="2",
+        )
+        pages.append(payload([row], nextPageCursor=str(n + 1) if n < 24 else ""))
+    exchange.fetch.side_effect = pages
+    result = await fetch_open_orders_complete(exchange, SYMBOL)
+    assert len(result) == 25 and result[0]["clientOrderId"] in ("", None)
+    assert exchange.fetch.await_count == 25
+    query = parse_qs(urlsplit(exchange.fetch.await_args.args[0]).query)
+    assert query["cursor"] == ["24"] and query["openOnly"] == ["0"] and "startTime" not in query
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing_cursor", "loop", "empty_continuation", "duplicate", "wrong_symbol"]
+)
+async def test_complete_directory_rejects_partial_or_conflicting_pages(exchange, fault):
+    from ccxt_cm import fetch_open_orders_complete
+
+    row = dict(ROW, orderStatus="New")
+    first = payload([row], nextPageCursor="next")
+    second = payload([dict(row, orderId="second")])
+    if fault == "missing_cursor":
+        first["result"].pop("nextPageCursor")
+    elif fault == "loop":
+        second["result"]["nextPageCursor"] = "next"
+    elif fault == "empty_continuation":
+        first["result"]["list"] = []
+    elif fault == "duplicate":
+        second["result"]["list"] = [row]
+    else:
+        second["result"]["list"][0]["symbol"] = "OTHER"
+    exchange.fetch.side_effect = [first, second]
+    with pytest.raises(ClientOrderLookupUnconfirmed):
+        await fetch_open_orders_complete(exchange, SYMBOL)
+
+
+@pytest.mark.parametrize("count", [8192, 8193])
+async def test_complete_directory_capacity_applies_to_terminal_page_too(exchange, count):
+    from ccxt_cm import fetch_open_orders_complete
+
+    pages = []
+    for first in range(0, count, 50):
+        rows = [
+            dict(ROW, orderId=str(n), orderStatus="New")
+            for n in range(first, min(first + 50, count))
+        ]
+        pages.append(payload(rows, nextPageCursor=str(first + 50) if first + 50 < count else ""))
+    exchange.fetch.side_effect = pages
+    if count == 8192:
+        assert len(await fetch_open_orders_complete(exchange, SYMBOL)) == count
+    else:
+        with pytest.raises(ClientOrderLookupUnconfirmed, match="capacity"):
+            await fetch_open_orders_complete(exchange, SYMBOL)
+
+
+@pytest.mark.parametrize("parsed", [None, [], 1, "exception"])
+async def test_complete_directory_parser_failure_remains_unconfirmed_and_redacted(exchange, parsed):
+    from ccxt_cm import fetch_open_orders_complete
+
+    if parsed == "exception":
+        exchange.parse_order = Mock(side_effect=ValueError("fixture-secret-parser"))
+    else:
+        exchange.parse_order = Mock(return_value=parsed)
+    with pytest.raises(ClientOrderLookupUnconfirmed, match="mapping") as result:
+        await fetch_open_orders_complete(exchange, SYMBOL)
+    assert "fixture-secret" not in str(result.value)
+
+
+@pytest.mark.parametrize(
+    "code,definite",
+    [
+        (170131, True),
+        (170193, True),
+        (170141, False),
+        (170146, False),
+        (10006, False),
+        (999999, False),
+    ],
+)
+def test_order_errors_keep_codes_not_transport_text_or_credentials(code, definite):
+    from ccxt_cm.order_lookup import order_error_diagnostic
+
+    diagnostic = order_error_diagnostic(
+        ccxt.ExchangeError(
+            f'bybit {{"retCode":{code},"retMsg":"fixture-secret https://secret",'
+            '"result":{"api_key":"fixture-key"}}'
+        )
+    )
+    assert diagnostic["error_code"] == code
+    assert diagnostic["definite_rejection"] is definite
+    assert "fixture-" not in str(diagnostic) and "https" not in str(diagnostic)
+
+
+async def test_lookup_failure_keeps_exact_stage_and_code_not_a_create_rejection(exchange):
+    exchange.fetch.side_effect = [
+        payload([]),
+        ccxt.ExchangeError('bybit {"retCode":170131,"retMsg":"fixture-secret"}'),
+    ]
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
+    assert error.value.diagnostic["step"] == "order_history"
+    assert error.value.diagnostic["error_code"] == 170131
+    assert not getattr(error.value, "order_not_created", False)
+    assert "fixture-secret" not in str(error.value.diagnostic)
+
+
+async def test_parser_failure_preserves_returned_original_order_identity(exchange):
+    exchange.parse_order = Mock(side_effect=ValueError("fixture-secret"))
+    with pytest.raises(ClientOrderLookupUnconfirmed) as error:
+        await fetch_bybit_testnet_spot_order_by_client_id(exchange, SYMBOL, CLIENT_ID)
+    detail = error.value.diagnostic
+    assert detail["step"] == "order_parse"
+    assert detail["order_id"] == ROW["orderId"] and detail["client_order_id"] == CLIENT_ID
+    assert "fixture-secret" not in str(detail)
