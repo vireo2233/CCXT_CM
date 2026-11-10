@@ -33,6 +33,14 @@ def spot_batch_capabilities(exchange, symbol, identity=None):
         }
         for operation, method in _METHODS.items()
     }
+    if (
+        exchange.id == "binance"
+        and (identity or {}).get("environment") == "sandbox"
+        and (identity or {}).get("market_type") == "spot"
+    ):
+        # CCXT's aggregate batch declarations can refer to derivatives.
+        for caps in result.values():
+            caps["native"] = False
     if exchange.id != "bybit":
         return result
     try:

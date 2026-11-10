@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import re
+from enum import StrEnum
 
 from ccxt import ExchangeError, NotSupported
 
@@ -12,12 +13,19 @@ from .account_guards import _require_bybit_testnet_spot
 _MAX_LOOKUP_PAGES = 10
 
 
+class OriginalLookup(StrEnum):
+    FOUND = "found"
+    ABSENT = "complete_absence"
+    UNCONFIRMED = "unconfirmed"
+
+
 class ClientOrderLookupUnconfirmed(ExchangeError):
     """No unique, identity-matched order was proved; retain the original intent."""
 
-    def __init__(self, message, diagnostic=None):
+    def __init__(self, message, diagnostic=None, *, outcome=OriginalLookup.UNCONFIRMED):
         super().__init__(message)
         self.diagnostic = diagnostic or {"reason": message}
+        self.outcome = outcome
 
 
 def order_error_diagnostic(exc):
@@ -205,7 +213,9 @@ async def fetch_bybit_testnet_spot_order_by_client_id(
         raise ClientOrderLookupUnconfirmed(
             "Exact order lookup deadline remains unconfirmed"
         ) from None
-    raise ClientOrderLookupUnconfirmed("Original order outcome remains unknown after exact queries")
+    raise ClientOrderLookupUnconfirmed(
+        "Original order outcome remains unknown after exact queries", outcome=OriginalLookup.ABSENT
+    )
 
 
 async def fetch_open_orders_complete(exchange, symbol):
