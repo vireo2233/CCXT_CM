@@ -122,8 +122,13 @@ async def test_empty_realtime_queries_history_with_identical_original_identity(e
 @pytest.mark.parametrize("history", [False, True])
 async def test_expected_order_id_preserves_original_identity_and_query_priority(exchange, history):
     row = dict(
-        ROW, qty="21.93396", price="0.24431960", cumExecQty="0", cumExecValue="0",
-        leavesQty="21.93396", avgPrice="",
+        ROW,
+        qty="21.93396",
+        price="0.24431960",
+        cumExecQty="0",
+        cumExecValue="0",
+        leavesQty="21.93396",
+        avgPrice="",
     )
     original = copy.deepcopy(row)
     exchange.fetch.side_effect = ([payload([])] if history else []) + [payload([row])]
@@ -188,7 +193,8 @@ async def test_invalid_expected_order_id_never_sends(exchange, identity):
 
 async def test_expected_order_id_does_not_relax_page_uniqueness_or_empty_results(exchange):
     exchange.fetch.side_effect = [
-        payload([copy.deepcopy(ROW)], nextPageCursor="next-page"), payload([copy.deepcopy(ROW)])
+        payload([copy.deepcopy(ROW)], nextPageCursor="next-page"),
+        payload([copy.deepcopy(ROW)]),
     ]
     with pytest.raises(ClientOrderLookupUnconfirmed, match="not unique"):
         await fetch_bybit_testnet_spot_order_by_client_id(

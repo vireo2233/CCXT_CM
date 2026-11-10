@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections import Counter
+from inspect import getattr_static
 
 from ccxt import ExchangeError, NotSupported
 
@@ -26,7 +27,8 @@ def spot_batch_capabilities(exchange, symbol, identity=None):
         operation: {
             "native": False if capability(exchange, method) in (False, "emulated") else None,
             "single": capability(
-                exchange, "createOrder" if operation == "create" else "cancelOrder",
+                exchange,
+                "createOrder" if operation == "create" else "cancelOrder",
             ),
             "max_orders": 1,
             "endpoint": None,
@@ -61,8 +63,10 @@ def spot_batch_capabilities(exchange, symbol, identity=None):
     for operation, method in _METHODS.items():
         if capability(exchange, method) is True:
             result[operation] = {
-                "native": True, "single": result[operation]["single"],
-                "max_orders": 10, "endpoint": _ENDPOINTS[operation],
+                "native": True,
+                "single": result[operation]["single"],
+                "max_orders": 10,
+                "endpoint": _ENDPOINTS[operation],
             }
     return result
 
@@ -91,8 +95,13 @@ async def submit_spot_batch(exchange, symbol, operation, items, identity):
             if item.get("symbol") != symbol:
                 raise ValueError("Spot batch symbol mismatch")
             row = exchange.create_order_request(
-                symbol, item["type"], item["side"], item["amount"], item["price"],
-                dict(item.get("params") or {}), True,
+                symbol,
+                item["type"],
+                item["side"],
+                item["amount"],
+                item["price"],
+                dict(item.get("params") or {}),
+                True,
             )
             if row.pop("category", None) != "spot":
                 raise ValueError("Spot batch cannot route to another market type")
@@ -106,26 +115,37 @@ async def submit_spot_batch(exchange, symbol, operation, items, identity):
     if len(set(keys)) != len(keys):
         raise ValueError("Batch identities must be unique")
     path = caps["endpoint"].lstrip("/")
+    # Use the generated endpoint's API selector (a string or list in CCXT).
+    route = getattr_static(
+        type(exchange), "private_post_" + path.replace("/", "_").replace("-", "_")
+    )
     config = dict(exchange.api["private"]["post"][path])
     # Spot batch quota counts children, not just HTTP requests. Reuse the
     # existing CCXT token bucket and conservative endpoint weight per child.
     config["cost"] *= len(items)
     async with asyncio.timeout(exchange.timeout / 1000):
         raw = await exchange.request(
-            path, "private", "POST", {
-                "category": "spot", "request": requests,
+            path,
+            route.api,
+            "POST",
+            {
+                "category": "spot",
+                "request": requests,
                 # fetch2 consumes this control before signing. A lost write
                 # reply must be resolved by the original ID, never replayed.
                 "maxRetriesOnFailure": 0,
-            }, config=config,
+            },
+            config=config,
         )
     result_info = raw.get("result") if isinstance(raw, dict) else None
     error_info = raw.get("retExtInfo") if isinstance(raw, dict) else None
     rows = result_info.get("list") if isinstance(result_info, dict) else None
     codes = error_info.get("list") if isinstance(error_info, dict) else None
     if (
-        not isinstance(raw, dict) or type(raw.get("retCode")) is not int
-        or raw["retCode"] != 0 or not isinstance(rows, list)
+        not isinstance(raw, dict)
+        or type(raw.get("retCode")) is not int
+        or raw["retCode"] != 0
+        or not isinstance(rows, list)
         or len(rows) > len(items)
     ):
         raise ExchangeError("Native batch response lacks matched item evidence")
@@ -139,8 +159,7 @@ async def submit_spot_batch(exchange, symbol, operation, items, identity):
     matched = {
         r[key_field]: (r, code)
         for r, code in zip(rows, codes, strict=True)
-        if isinstance(r, dict) and r.get(key_field) in keys
-        and counts[r[key_field]] == 1
+        if isinstance(r, dict) and r.get(key_field) in keys and counts[r[key_field]] == 1
     }
     result = []
     for key in keys:
@@ -159,13 +178,19 @@ async def submit_spot_batch(exchange, symbol, operation, items, identity):
                 diagnostic = {"error_code": 0, "reason": outcome}
             elif operation == "create" and not oid and diagnostic.get("definite_rejection"):
                 outcome = "not_created"
-        result.append({
-            "id": key if operation == "cancel" else (
-                oid if oid_valid and ids[oid] == 1 and row.get("symbol") == market["id"] else None
-            ),
-            "clientOrderId": key if operation == "create" else cid,
-            "symbol": symbol,
-            "cm_outcome": outcome,
-            "cm_diagnostic": diagnostic,
-        })
+        result.append(
+            {
+                "id": key
+                if operation == "cancel"
+                else (
+                    oid
+                    if oid_valid and ids[oid] == 1 and row.get("symbol") == market["id"]
+                    else None
+                ),
+                "clientOrderId": key if operation == "create" else cid,
+                "symbol": symbol,
+                "cm_outcome": outcome,
+                "cm_diagnostic": diagnostic,
+            }
+        )
     return result

@@ -526,8 +526,12 @@ async def test_testnet_spot_price_band_requires_native_identity_and_numbers(faul
     row = {"symbol": "JUPUSDT", "buyLmt": "0.29", "sellLmt": "0.23", "ts": "2000"}
     raw = {"retCode": 0, "time": 2001, "result": row}
     exchange.public_get_v5_market_price_limit = AsyncMock(return_value=raw)
-    replacements = {"symbol": ("symbol", "WRONG"), "timestamp": ("ts", "2002"),
-                    "nan": ("buyLmt", "NaN"), "crossed": ("sellLmt", "0.31")}
+    replacements = {
+        "symbol": ("symbol", "WRONG"),
+        "timestamp": ("ts", "2002"),
+        "nan": ("buyLmt", "NaN"),
+        "crossed": ("sellLmt", "0.31"),
+    }
     if fault in replacements:
         field, value = replacements[fault]
         row[field] = value
@@ -545,7 +549,8 @@ async def test_testnet_spot_price_band_requires_native_identity_and_numbers(faul
         assert native == raw and data["symbol"] == "JUP/USDT" and data["at_ms"] == 2000
         assert str(data["buy_limit"]) == "0.29" and str(data["sell_limit"]) == "0.23"
         exchange.public_get_v5_market_price_limit.assert_awaited_once_with(
-            {"category": "spot", "symbol": "JUPUSDT"})
+            {"category": "spot", "symbol": "JUPUSDT"}
+        )
 
 
 async def test_public_suffix_keeps_native_predecessor_and_explicit_coverage_basis():
